@@ -1,0 +1,322 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/Bin-E-Commerce/Bin-E-Commerce-UI-Web/main/public/images/logo/logo_icon.png" alt="Bin E-Commerce" width="112" />
+
+# Recommendation Service
+
+### Turn scattered shopping signals into context-aware product recommendations.
+
+Recommendation Service is the Bin E-Commerce bounded context for collecting behavioral signals, building preference profiles, and serving relevant products for each shopping session.
+
+<p>
+  <img src="https://img.shields.io/badge/NestJS-11-E0234E?logo=nestjs&logoColor=white" alt="NestJS 11" />
+  <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Kafka-event--driven-231F20?logo=apachekafka&logoColor=white" alt="Kafka" />
+  <img src="https://img.shields.io/badge/TypeORM-0.3-FE0803?logo=typeorm&logoColor=white" alt="TypeORM" />
+</p>
+
+</div>
+
+---
+
+> **Current status:** The service scaffold is ready to commit. Phase 1 will be implemented after this scaffold is reviewed and committed. Behavioral ingestion endpoints, Kafka consumers, and the interactions table are intentionally not enabled in this commit.
+
+## The Problem
+
+A newest-products or best-selling list can answer “what is available,” but not “what is this shopper likely to care about next.” When product views, searches, cart actions, and purchases remain isolated inside different services, recommendations become difficult to personalize, explain, and measure.
+
+Recommendation Service brings these signals together through a stable event contract, stores only data it owns, and evolves from transparent rules to candidate generation, ranking, and machine learning. It follows established recommendation-system patterns while keeping source data, computation pipelines, and serving APIs separate from Product Service.
+
+## See It Work
+
+The scaffold currently exposes a health check for HTTP and PostgreSQL readiness:
+
+```powershell
+cd services/recommendation-service
+Copy-Item .env.example .env
+npm run dev
+```
+
+```powershell
+curl http://localhost:3013/api/health
+```
+
+Minimal response:
+
+```json
+{
+  "status": "ok",
+  "service": "recommendation-service",
+  "checks": {
+    "http": { "status": "ok" },
+    "postgres": { "status": "up" }
+  }
+}
+```
+
+Swagger is enabled only in development at `http://localhost:3013/docs`.
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 20 or later.
+- PostgreSQL with a database named `bin_ecommerce_recommendation`.
+- Root infrastructure running when using the shared local environment.
+- Kafka will be required by Phase 1; the current scaffold does not start a producer or consumer yet.
+
+### Run locally
+
+```powershell
+cd services/recommendation-service
+Copy-Item .env.example .env
+npm install
+npm run dev
+```
+
+The service listens on `http://localhost:3013` with the `/api` prefix. Schema changes will use versioned migrations; `synchronize` is disabled.
+
+> **Trust boundary:** The service writes only to the PostgreSQL database owned by Recommendation Service. Browsers should not call it directly in production; API Gateway will own JWT validation, route policy, rate limiting, and trusted identity forwarding. Never commit `.env`, place secrets in event payloads, or query Product, Order, or Seller Service databases directly.
+
+## What the Service Owns
+
+| Responsibility       | Recommendation Service owns                                                            |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| Behavioral signals   | Normalize, validate, and store interactions used by recommendation pipelines           |
+| Preference profiles  | Calculate user/session weights in later phases                                         |
+| Candidate generation | Produce candidates from behavior, categories, similar products, and business rules     |
+| Ranking              | Order candidates by context, freshness, quality, and diversity                         |
+| Recommendation API   | Return products with source, reason, and metadata for the frontend                     |
+| Measurement          | Attach impression, click, and conversion signals to calculate CTR and purchase metrics |
+
+The service does not own product master data, prices, inventory, order state, seller profiles, or payment data. When those facts are needed, it will use the explicit API or event contract of the owning service.
+
+## Target Flow
+
+```mermaid
+flowchart LR
+    Shopper[Shopper] --> Web[Web App]
+    Web --> Gateway[API Gateway\nJWT + rate limit]
+    Gateway -->|interaction event| Recommendation[Recommendation Service]
+    Recommendation -->|publish / consume| Kafka[(Kafka)]
+    Kafka --> Interactions[(PostgreSQL\ninteractions)]
+    Recommendation -. Later phase .-> Profile[User / Session Profile]
+    Recommendation -. Later phase .-> Candidates[Candidate Generation]
+    Candidates -. Later phase .-> Ranker[Ranking + Diversity]
+    Ranker -. Later phase .-> Gateway
+    AI[AI Service\nembeddings] -. Later phase .-> Vector[(Qdrant)]
+```
+
+The core rule is simple: events enter through an authenticated boundary and are durably stored before being used for computation. Recommendation responses never read another service's database directly.
+
+## Phase 1 — Event Foundation
+
+Phase 1 is the data foundation, not the ranking engine. Its goal is to create a reliable path from shopper behavior to a durable interaction store so later phases have clean, replayable data.
+
+### Scope
+
+1. Add the shared `recommendation.interaction.recorded.v1` event contract to `packages/common`.
+2. Expose the internal ingestion route through Gateway: `POST /api/v1/recommendation/events`.
+3. Support authenticated users and guest UUID v4 sessions; never trust an arbitrary `userId` from the request body.
+4. Validate the interaction allow-list, product/category/search context, timestamp, and bounded metadata size.
+5. Publish to Kafka topic `recommendation.interactions.v1`, keyed by `userId` or `sessionId` to preserve per-actor ordering.
+6. Consume events in Recommendation Service, deduplicate by `eventId`, and persist them to `recommendation_interactions`.
+7. Add retries, structured logs, baseline metrics, and a dead-letter strategy for invalid events or persistence failures.
+8. Add migrations, unit tests, and integration tests for anonymous, authenticated, duplicate, malformed, and Kafka-retry flows.
+
+### Phase 1 Interaction Types
+
+| Type                        | Trigger                                                   | Pipeline value                  |
+| --------------------------- | --------------------------------------------------------- | ------------------------------- |
+| `PRODUCT_VIEWED`            | Shopper opens a product detail or views an item           | Lightweight interest signal     |
+| `PRODUCT_CLICKED`           | Shopper clicks a product from a listing or recommendation | Intentional interest signal     |
+| `PRODUCT_IMPRESSED`         | A product is actually shown in the viewport               | Denominator for CTR measurement |
+| `SEARCH_PERFORMED`          | Shopper completes a search                                | Current shopping intent         |
+| `PRODUCT_ADDED_TO_CART`     | Shopper adds a variant to the cart                        | Strong purchase intent          |
+| `PRODUCT_REMOVED_FROM_CART` | Shopper removes an item from the cart                     | Reduced interest signal         |
+
+### Explicitly Out of Scope for Phase 1
+
+- Qdrant or vector similarity search.
+- OpenAI or AI Service embedding generation.
+- User profiles, category affinity, or real-time session intent.
+- Ranking models, collaborative filtering, or deep personalization.
+- Serving recommendations from this service; the frontend will continue using its existing product source until the recommendation API is approved.
+
+## Event Contract
+
+Events will use the monorepo integration envelope with `eventId`, `eventName`, `eventVersion`, `source`, `occurredAt`, `aggregateId`, `metadata`, and `data`.
+
+Example payload:
+
+```json
+{
+  "eventId": "8f4d1c89-9dd5-4a4d-a0ec-222222222222",
+  "eventName": "recommendation.interaction.recorded",
+  "eventVersion": 1,
+  "source": "web",
+  "occurredAt": "2026-09-04T10:00:00.000Z",
+  "aggregateId": "session-or-user-id",
+  "metadata": {
+    "traceId": "trace-123",
+    "page": "home",
+    "position": 4
+  },
+  "data": {
+    "interactionType": "PRODUCT_VIEWED",
+    "userId": null,
+    "sessionId": "00000000-0000-4000-8000-000000000001",
+    "productId": "product-uuid",
+    "variantId": null,
+    "categoryId": "category-uuid",
+    "query": null
+  }
+}
+```
+
+`eventId` is the mandatory idempotency key. `userId` comes from Gateway-authenticated identity; `sessionId` is used for guests. Do not put email addresses, access tokens, addresses, payment data, or unnecessary sensitive information in interaction events.
+
+## API Reference
+
+### Available in the Scaffold
+
+| Method | Route         | Purpose                                     |
+| ------ | ------------- | ------------------------------------------- |
+| `GET`  | `/api/health` | Check HTTP and PostgreSQL connection status |
+
+### Planned for Phase 1
+
+| Method | Route                           | Purpose                      | Boundary                             |
+| ------ | ------------------------------- | ---------------------------- | ------------------------------------ |
+| `POST` | `/api/v1/recommendation/events` | Record one valid interaction | API Gateway → Recommendation Service |
+
+Recommendation, feedback, and admin replay routes will be designed after the event foundation has real data and measurable quality signals.
+
+## Planned Data Model
+
+Phase 1 will introduce the `recommendation_interactions` table with these data groups:
+
+| Group       | Planned fields                                                         | Rule                                                   |
+| ----------- | ---------------------------------------------------------------------- | ------------------------------------------------------ |
+| Identity    | `user_id`, `session_id`                                                | At least one actor; prefer the user when authenticated |
+| Interaction | `interaction_type`, `product_id`, `variant_id`, `category_id`, `query` | Must match the type-specific allow-list                |
+| Event       | `event_id`, `event_name`, `event_version`, `source`, `occurred_at`     | `event_id` is unique for deduplication                 |
+| Context     | `page`, `position`, `request_id`, bounded metadata                     | No secrets or unnecessary PII                          |
+| Processing  | `received_at`, `processed_at`, `processing_status`                     | Supports retry, replay, and failure auditing           |
+
+The schema and migration will be added when Phase 1 starts, after the event contract is finalized.
+
+## Project Structure
+
+```text
+services/recommendation-service/
+├── src/
+│   ├── database/
+│   │   ├── entities/                    # Persistence models owned by this service
+│   │   └── migrations/                  # Versioned schema changes
+│   ├── modules/
+│   │   ├── health/                      # Runtime health boundary
+│   │   └── interactions/                # Phase 1: ingestion and persistence
+│   │       ├── application/             # Use cases, contracts, processing rules
+│   │       ├── infrastructure/          # Repository and Kafka adapters
+│   │       └── presentation/            # Controllers and DTO validation
+│   ├── kafka/                           # Producer, consumer, and topic wiring
+│   ├── app.module.ts                    # Module composition
+│   └── main.ts                          # HTTP bootstrap
+├── .env.example
+├── nest-cli.json
+├── package.json
+├── tsconfig.build.json
+├── tsconfig.json
+└── README.md
+```
+
+Dependency direction is one-way: presentation calls application; application knows only contracts and ports; infrastructure implements adapters. Database entities must not be imported into controllers.
+
+## Environment
+
+| Variable               | Local default                    | Purpose                                   |
+| ---------------------- | -------------------------------- | ----------------------------------------- |
+| `PORT`                 | `3013`                           | HTTP port                                 |
+| `NODE_ENV`             | `development`                    | Enables Swagger outside production        |
+| `POSTGRES_DB`          | `bin_ecommerce_recommendation`   | Database owned by this service            |
+| `KAFKA_BROKERS`        | `localhost:29092`                | Broker address when running from the host |
+| `KAFKA_CLIENT_ID`      | `recommendation-service`         | Kafka client identity                     |
+| `KAFKA_CONSUMER_GROUP` | `recommendation-interactions-v1` | Phase 1 consumer group                    |
+
+See the complete sample in [.env.example](./.env.example). Local `.env` files are ignored by Git and must not be used as production secret sources.
+
+## Development Commands
+
+```powershell
+npm run dev          # Watch mode
+npm run build        # Compile the service
+npm run start        # Run the compiled service
+npm run type-check   # TypeScript validation without emitting files
+npm run lint         # ESLint over src
+npm run test         # Jest
+```
+
+## Roadmap
+
+<details>
+<summary><strong>Detailed future phases</strong></summary>
+
+### Phase 2 — Profiles and Candidate Generation
+
+- Calculate category affinity, product affinity, and session intent.
+- Add Redis for short-lived profiles and caches with explicit TTL and invalidation rules.
+- Generate candidates from behavior, similar products, categories, and business rules.
+- Return source and reason metadata so the frontend and demo can explain recommendations.
+
+### Phase 3 — Semantic Similarity
+
+- Have AI Service create embeddings from normalized product data.
+- Store vectors in Qdrant and filter by product status, category, and seller policy.
+- Keep vector data outside the Product Service database.
+
+### Phase 4 — Ranking, Diversity, and Online Adaptation
+
+- Combine relevance, freshness, popularity, availability, and diversity.
+- Handle cold-start users, new products, and anonymous sessions.
+- Measure CTR, add-to-cart rate, purchase conversion, coverage, and latency.
+
+### Phase 5 — Production Hardening
+
+- Add outbox/DLQ, replay tooling, retention policies, observability, and alerts.
+- Load-test event bursts and recommendation read traffic.
+- Add A/B testing with guardrails, rollback, and model/rule version auditing.
+
+</details>
+
+## Engineering Rules
+
+- API Gateway is the public entry point; the service must not infer identity from the request body.
+- Event contracts are stable cross-service boundaries; never send TypeORM entities through Kafka.
+- Every consumer must be idempotent by `eventId`.
+- Every schema change must be explicit; `synchronize` is disabled in production.
+- Kafka, Redis, Qdrant, and downstream providers must not silently lose accepted data without a retry or DLQ state.
+- Recommendations support purchase decisions; they do not replace the owning service's checks for price, inventory, purchase permissions, or order status.
+
+## FAQ
+
+### Why not put recommendations in Product Service?
+
+Product Service owns the catalog and product lifecycle. Recommendation has its own event stream, profiles, ranking, cache, and vector-search concerns; separating them keeps ownership clear and allows independent scaling.
+
+### Why are AI and Qdrant not being added immediately?
+
+Without clean events, embeddings and ranking produce results that are difficult to explain or evaluate. Phase 1 establishes schema, idempotency, and replayability first; semantic search can be added once the contract and metrics are reliable.
+
+### Can guest users receive recommendations?
+
+Yes. The initial implementation will use a UUID v4 `sessionId`. After login, signals can be merged according to an explicit identity policy without trusting client-supplied identity fields.
+
+## Contributing
+
+Keep controllers thin, place business rules inside the relevant interactions or recommendation module, and add tests for every event-contract, idempotency, or ranking-boundary change. Cross-service changes should update the README, contract, and flow diagram together.
+
+## License
+
+This service is part of the Bin E-Commerce monorepo. Follow the license and contribution rules defined at the repository root.

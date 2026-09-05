@@ -20,17 +20,17 @@ Recommendation Service is the Bin E-Commerce bounded context for collecting beha
 
 ---
 
-> **Current status:** The service scaffold is ready to commit. Phase 1 will be implemented after this scaffold is reviewed and committed. Behavioral ingestion endpoints, Kafka consumers, and the interactions table are intentionally not enabled in this commit.
+> **Current status:** Phase 1 event ingestion is implemented. The service accepts validated interaction events, publishes them to Kafka, consumes them idempotently into PostgreSQL, and routes malformed or exhausted events to a DLQ.
 
 ## The Problem
 
-A newest-products or best-selling list can answer “what is available,” but not “what is this shopper likely to care about next.” When product views, searches, cart actions, and purchases remain isolated inside different services, recommendations become difficult to personalize, explain, and measure.
+A newest-products or best-selling list can answer “what is available,” but not “what is this shopper likely to care about next.” When product views, searches, and cart actions remain isolated inside different services, recommendations become difficult to personalize, explain, and measure.
 
 Recommendation Service brings these signals together through a stable event contract, stores only data it owns, and evolves from transparent rules to candidate generation, ranking, and machine learning. It follows established recommendation-system patterns while keeping source data, computation pipelines, and serving APIs separate from Product Service.
 
 ## See It Work
 
-The scaffold currently exposes a health check for HTTP and PostgreSQL readiness:
+The service exposes a health check and the Phase 1 interaction ingestion boundary:
 
 ```powershell
 cd services/recommendation-service
@@ -39,7 +39,7 @@ npm run dev
 ```
 
 ```powershell
-curl http://localhost:3013/api/health
+curl http://localhost:3006/api/v1/health
 ```
 
 Minimal response:
@@ -55,7 +55,7 @@ Minimal response:
 }
 ```
 
-Swagger is enabled only in development at `http://localhost:3013/docs`.
+Swagger is enabled only in development at `http://localhost:3006/docs`.
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ Swagger is enabled only in development at `http://localhost:3013/docs`.
 - Node.js 20 or later.
 - PostgreSQL with a database named `bin_ecommerce_recommendation`.
 - Root infrastructure running when using the shared local environment.
-- Kafka will be required by Phase 1; the current scaffold does not start a producer or consumer yet.
+- Kafka is required for durable event ingestion and asynchronous persistence.
 
 ### Run locally
 
@@ -75,7 +75,7 @@ npm install
 npm run dev
 ```
 
-The service listens on `http://localhost:3013` with the `/api` prefix. Schema changes will use versioned migrations; `synchronize` is disabled.
+The service listens on `http://localhost:3006` with the `/api` prefix. Schema changes will use versioned migrations; `synchronize` is disabled.
 
 > **Trust boundary:** The service writes only to the PostgreSQL database owned by Recommendation Service. Browsers should not call it directly in production; API Gateway will own JWT validation, route policy, rate limiting, and trusted identity forwarding. Never commit `.env`, place secrets in event payloads, or query Product, Order, or Seller Service databases directly.
 
@@ -116,14 +116,14 @@ Phase 1 is the data foundation, not the ranking engine. Its goal is to create a 
 
 ### Scope
 
-1. Add the shared `recommendation.interaction.recorded.v1` event contract to `packages/common`.
-2. Expose the internal ingestion route through Gateway: `POST /api/v1/recommendation/events`.
-3. Support authenticated users and guest UUID v4 sessions; never trust an arbitrary `userId` from the request body.
-4. Validate the interaction allow-list, product/category/search context, timestamp, and bounded metadata size.
-5. Publish to Kafka topic `recommendation.interactions.v1`, keyed by `userId` or `sessionId` to preserve per-actor ordering.
-6. Consume events in Recommendation Service, deduplicate by `eventId`, and persist them to `recommendation_interactions`.
-7. Add retries, structured logs, baseline metrics, and a dead-letter strategy for invalid events or persistence failures.
-8. Add migrations, unit tests, and integration tests for anonymous, authenticated, duplicate, malformed, and Kafka-retry flows.
+1. The shared `recommendation.interaction.recorded` contract lives in `packages/common`.
+2. Gateway exposes `POST /api/v1/recommendation/events` for authenticated and guest sessions.
+3. Recommendation Service validates the interaction allow-list and bounded context fields.
+4. Kafka topic `recommendation.interactions.v1` is keyed by `userId` or `sessionId`.
+5. The consumer deduplicates by `eventId` and persists to `recommendation_interactions`.
+6. Invalid events and exhausted persistence retries are published to `recommendation.interactions.dlq.v1`.
+7. Web emits view, click, impression, search, add-to-cart, and remove-from-cart signals without blocking UX.
+8. Migrations and unit tests cover anonymous, malformed, duplicate, and retry paths.
 
 ### Phase 1 Interaction Types
 
@@ -155,13 +155,11 @@ Example payload:
   "eventId": "8f4d1c89-9dd5-4a4d-a0ec-222222222222",
   "eventName": "recommendation.interaction.recorded",
   "eventVersion": 1,
-  "source": "web",
+  "source": "api-gateway",
   "occurredAt": "2026-09-04T10:00:00.000Z",
   "aggregateId": "session-or-user-id",
   "metadata": {
-    "traceId": "trace-123",
-    "page": "home",
-    "position": 4
+    "correlationId": "request-123"
   },
   "data": {
     "interactionType": "PRODUCT_VIEWED",
@@ -170,7 +168,11 @@ Example payload:
     "productId": "product-uuid",
     "variantId": null,
     "categoryId": "category-uuid",
-    "query": null
+    "query": null,
+    "page": "home",
+    "position": 4,
+    "quantity": null,
+    "requestId": "request-123"
   }
 }
 ```
@@ -179,13 +181,13 @@ Example payload:
 
 ## API Reference
 
-### Available in the Scaffold
+### Available
 
 | Method | Route         | Purpose                                     |
 | ------ | ------------- | ------------------------------------------- |
-| `GET`  | `/api/health` | Check HTTP and PostgreSQL connection status |
+| `GET`  | `/api/v1/health` | Check HTTP and PostgreSQL connection status |
 
-### Planned for Phase 1
+### Phase 1
 
 | Method | Route                           | Purpose                      | Boundary                             |
 | ------ | ------------------------------- | ---------------------------- | ------------------------------------ |
@@ -193,11 +195,11 @@ Example payload:
 
 Recommendation, feedback, and admin replay routes will be designed after the event foundation has real data and measurable quality signals.
 
-## Planned Data Model
+## Data Model
 
-Phase 1 will introduce the `recommendation_interactions` table with these data groups:
+Phase 1 introduces the `recommendation_interactions` table with these data groups:
 
-| Group       | Planned fields                                                         | Rule                                                   |
+| Group       | Fields                                                                | Rule                                                   |
 | ----------- | ---------------------------------------------------------------------- | ------------------------------------------------------ |
 | Identity    | `user_id`, `session_id`                                                | At least one actor; prefer the user when authenticated |
 | Interaction | `interaction_type`, `product_id`, `variant_id`, `category_id`, `query` | Must match the type-specific allow-list                |
@@ -205,7 +207,7 @@ Phase 1 will introduce the `recommendation_interactions` table with these data g
 | Context     | `page`, `position`, `request_id`, bounded metadata                     | No secrets or unnecessary PII                          |
 | Processing  | `received_at`, `processed_at`, `processing_status`                     | Supports retry, replay, and failure auditing           |
 
-The schema and migration will be added when Phase 1 starts, after the event contract is finalized.
+The schema is created by the versioned migration `1788020000000-create-recommendation-interactions`.
 
 ## Project Structure
 
@@ -238,7 +240,7 @@ Dependency direction is one-way: presentation calls application; application kno
 
 | Variable               | Local default                    | Purpose                                   |
 | ---------------------- | -------------------------------- | ----------------------------------------- |
-| `PORT`                 | `3013`                           | HTTP port                                 |
+| `PORT`                 | `3006`                           | HTTP port                                 |
 | `NODE_ENV`             | `development`                    | Enables Swagger outside production        |
 | `POSTGRES_DB`          | `bin_ecommerce_recommendation`   | Database owned by this service            |
 | `KAFKA_BROKERS`        | `localhost:29092`                | Broker address when running from the host |

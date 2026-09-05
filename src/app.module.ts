@@ -4,7 +4,9 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { KafkaModule } from "./kafka/kafka.module";
 import { HealthModule } from "./modules/health/health.module";
+import { InteractionsModule } from "./modules/interactions/interactions.module";
 
 // Khai báo dependency graph tối thiểu để service có thể khởi động trước Phase 1.
 @Module({
@@ -34,6 +36,8 @@ import { HealthModule } from "./modules/health/health.module";
         logging: config.get<string>("TYPEORM_LOGGING", "false") === "true",
       }),
     }),
+    KafkaModule,
+    InteractionsModule,
     HealthModule,
   ],
 })

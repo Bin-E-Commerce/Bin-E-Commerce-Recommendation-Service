@@ -3,7 +3,7 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import type { RecommendationInteractionRecordedEvent } from "../../application/types/interaction-event.types";
-import { RecommendationInteractionEntity } from "../../../../database/entities/recommendation-interaction.entity";
+import { RecommendationInteractionEntity } from "../../../../database/interactions/entities/interaction.entity";
 import { Repository } from "typeorm";
 
 export type InteractionInsertResult = "inserted" | "duplicate";
@@ -37,6 +37,11 @@ export class RecommendationInteractionRepository {
       position: event.data.position,
       quantity: event.data.quantity,
       requestId: event.data.requestId,
+      recommendationRequestId: event.data.recommendationRequestId ?? null,
+      recommendationItemId: event.data.recommendationItemId ?? null,
+      recommendationSource: event.data.recommendationSource ?? null,
+      recommendationRank: event.data.recommendationRank ?? null,
+      surface: event.data.surface ?? null,
       metadata: { ...(event.metadata ?? {}) },
       processingStatus: "PROCESSED",
       processingError: null,

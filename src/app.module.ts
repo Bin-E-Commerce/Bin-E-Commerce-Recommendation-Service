@@ -7,8 +7,11 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { KafkaModule } from "./kafka/kafka.module";
 import { HealthModule } from "./modules/health/health.module";
 import { InteractionsModule } from "./modules/interactions/interactions.module";
+import { RecommendationRedisModule } from "./infrastructure/redis/redis.module";
+import { RecommendationModule } from "./modules/recommendation/recommendation.module";
+import { CatalogModule } from "./modules/catalog/catalog.module";
 
-// Khai báo dependency graph tối thiểu để service có thể khởi động trước Phase 1.
+// Khai báo dependency graph của service và kết nối các bounded context vào runtime.
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -26,7 +29,7 @@ import { InteractionsModule } from "./modules/interactions/interactions.module";
         database: config.get<string>("POSTGRES_DB"),
         entities: [__dirname + "/**/*.entity{.ts,.js}"],
         migrations: [__dirname + "/database/migrations/*{.ts,.js}"],
-        // Migration là nguồn thay đổi schema duy nhất; Phase 1 sẽ bổ sung migration interactions.
+        // Migration là nguồn thay đổi schema duy nhất cho toàn bộ read model của service.
         migrationsRun: true,
         synchronize: false,
         ssl:
@@ -37,7 +40,10 @@ import { InteractionsModule } from "./modules/interactions/interactions.module";
       }),
     }),
     KafkaModule,
+    RecommendationRedisModule,
     InteractionsModule,
+    CatalogModule,
+    RecommendationModule,
     HealthModule,
   ],
 })

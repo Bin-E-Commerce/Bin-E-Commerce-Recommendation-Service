@@ -59,4 +59,31 @@ export class RecordInteractionDto {
   @IsOptional()
   @IsISO8601()
   occurredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  recommendationRequestId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  recommendationItemId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  recommendationSource?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1000)
+  recommendationRank?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  surface?: "home" | "product_detail" | "recommendations_page";
 }

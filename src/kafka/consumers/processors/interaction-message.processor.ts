@@ -1,13 +1,13 @@
 // Processor này định nghĩa retry/DLQ baseline cho Kafka; malformed event không được retry vì retry không thể sửa payload.
 
 import { Injectable, Logger } from "@nestjs/common";
-import { KafkaProducerService } from "../../../../kafka/producers/kafka-producer.service";
+import { KafkaProducerService } from "../../producers/kafka-producer.service";
 import {
   DEFAULT_KAFKA_RETRY_ATTEMPTS,
   RECOMMENDATION_INTERACTIONS_DLQ_TOPIC,
-} from "../../../../kafka/kafka.constants";
-import { InvalidInteractionEventError } from "../errors/invalid-interaction-event.error";
-import { InteractionProcessingService } from "./interaction-processing.service";
+} from "../../config/kafka.constants";
+import { InvalidInteractionEventError } from "../../../modules/interactions/application/errors/invalid-interaction-event.error";
+import { InteractionProcessingService } from "../../../modules/interactions/application/services/interaction-processing.service";
 
 @Injectable()
 export class InteractionMessageProcessor {

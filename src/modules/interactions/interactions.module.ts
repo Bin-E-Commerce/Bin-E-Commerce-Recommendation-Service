@@ -1,18 +1,20 @@
-// Module này đóng gói toàn bộ Phase 1 interaction flow: HTTP ingestion, Kafka processing và PostgreSQL read model.
+// Module này đóng gói interaction flow: HTTP ingestion, Kafka processing và PostgreSQL read model.
 
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { KafkaModule } from "../../kafka/kafka.module";
 import { KafkaConsumerService } from "../../kafka/consumers/kafka-consumer.service";
-import { RecommendationInteractionEntity } from "../../database/entities/recommendation-interaction.entity";
+import { RecommendationInteractionEntity } from "../../database/interactions/entities/interaction.entity";
 import { InteractionController } from "./presentation/controllers/interaction.controller";
 import { InteractionIngestionService } from "./application/services/interaction-ingestion.service";
-import { InteractionMessageProcessor } from "./application/services/interaction-message-processor.service";
+import { InteractionMessageProcessor } from "../../kafka/consumers/processors/interaction-message.processor";
 import { InteractionProcessingService } from "./application/services/interaction-processing.service";
 import { RecommendationInteractionRepository } from "./infrastructure/repositories/recommendation-interaction.repository";
+import { ProfilesModule } from "../profiles/profiles.module";
+import { CatalogModule } from "../catalog/catalog.module";
 
 @Module({
-  imports: [KafkaModule, TypeOrmModule.forFeature([RecommendationInteractionEntity])],
+  imports: [KafkaModule, ProfilesModule, CatalogModule, TypeOrmModule.forFeature([RecommendationInteractionEntity])],
   controllers: [InteractionController],
   providers: [
     InteractionIngestionService,

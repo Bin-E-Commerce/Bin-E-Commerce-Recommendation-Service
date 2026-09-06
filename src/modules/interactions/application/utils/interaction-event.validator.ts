@@ -7,24 +7,38 @@ import {
 import { InvalidInteractionEventError } from "../errors/invalid-interaction-event.error";
 import type { RecommendationInteractionRecordedEvent } from "../types/interaction-event.types";
 
-const interactionTypeSet = new Set(Object.values(RecommendationInteractionTypes));
+const interactionTypeSet = new Set(
+  Object.values(RecommendationInteractionTypes),
+);
 
 // Kiểm tra primitive bounded để Kafka consumer không nhận payload quá lớn hoặc sai kiểu.
 function requireString(value: unknown, field: string, maxLength = 255): string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > maxLength) {
-    throw new InvalidInteractionEventError(`${field} must be a non-empty bounded string`);
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > maxLength
+  ) {
+    throw new InvalidInteractionEventError(
+      `${field} must be a non-empty bounded string`,
+    );
   }
   return value.trim();
 }
 
 // Kiểm tra field nullable nhưng vẫn giới hạn kích thước khi có giá trị.
-function optionalString(value: unknown, field: string, maxLength = 255): string | null {
+function optionalString(
+  value: unknown,
+  field: string,
+  maxLength = 255,
+): string | null {
   if (value === null || value === undefined) return null;
   return requireString(value, field, maxLength);
 }
 
 // Chỉ giữ metadata trace được phép và giới hạn tổng kích thước để event không biến thành nơi lưu arbitrary payload.
-function validateMetadata(value: unknown): RecommendationInteractionRecordedEvent["metadata"] {
+function validateMetadata(
+  value: unknown,
+): RecommendationInteractionRecordedEvent["metadata"] {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new InvalidInteractionEventError("metadata must be an object");
@@ -33,7 +47,9 @@ function validateMetadata(value: unknown): RecommendationInteractionRecordedEven
   const metadata = value as Record<string, unknown>;
   const allowedKeys = ["correlationId", "causationId", "actorUserId"];
   if (Object.keys(metadata).some((key) => !allowedKeys.includes(key))) {
-    throw new InvalidInteractionEventError("metadata contains unsupported fields");
+    throw new InvalidInteractionEventError(
+      "metadata contains unsupported fields",
+    );
   }
 
   const validated: Record<string, string> = {};
@@ -65,7 +81,10 @@ export function validateInteractionEvent(
   }
 
   const payload = data as Record<string, unknown>;
-  const interactionType = requireString(payload.interactionType, "interactionType");
+  const interactionType = requireString(
+    payload.interactionType,
+    "interactionType",
+  );
   if (!interactionTypeSet.has(interactionType as never)) {
     throw new InvalidInteractionEventError("interactionType is not supported");
   }
@@ -73,7 +92,9 @@ export function validateInteractionEvent(
   const userId = optionalString(payload.userId, "userId");
   const sessionId = optionalString(payload.sessionId, "sessionId");
   if (!userId && !sessionId) {
-    throw new InvalidInteractionEventError("event must contain userId or sessionId");
+    throw new InvalidInteractionEventError(
+      "event must contain userId or sessionId",
+    );
   }
 
   const occurredAt = requireString(event.occurredAt, "occurredAt", 64);
@@ -93,22 +114,69 @@ export function validateInteractionEvent(
     ].includes(interactionType as never) &&
     !productId
   ) {
-    throw new InvalidInteractionEventError("productId is required for product interaction");
+    throw new InvalidInteractionEventError(
+      "productId is required for product interaction",
+    );
   }
-  if (interactionType === RecommendationInteractionTypes.SEARCH_PERFORMED && !query) {
-    throw new InvalidInteractionEventError("query is required for search interaction");
+  if (
+    interactionType === RecommendationInteractionTypes.SEARCH_PERFORMED &&
+    !query
+  ) {
+    throw new InvalidInteractionEventError(
+      "query is required for search interaction",
+    );
   }
 
   const position = payload.position;
-  if (position !== null && position !== undefined &&
-      (typeof position !== "number" || !Number.isInteger(position) || position < 0 || position > 1000)) {
-    throw new InvalidInteractionEventError("position must be an integer between 0 and 1000");
+  if (
+    position !== null &&
+    position !== undefined &&
+    (typeof position !== "number" ||
+      !Number.isInteger(position) ||
+      position < 0 ||
+      position > 1000)
+  ) {
+    throw new InvalidInteractionEventError(
+      "position must be an integer between 0 and 1000",
+    );
   }
 
   const quantity = payload.quantity;
-  if (quantity !== null && quantity !== undefined &&
-      (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 1 || quantity > 10000)) {
-    throw new InvalidInteractionEventError("quantity must be an integer between 1 and 10000");
+  if (
+    quantity !== null &&
+    quantity !== undefined &&
+    (typeof quantity !== "number" ||
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 10000)
+  ) {
+    throw new InvalidInteractionEventError(
+      "quantity must be an integer between 1 and 10000",
+    );
+  }
+
+  const recommendationRank = payload.recommendationRank;
+  if (
+    recommendationRank !== null &&
+    recommendationRank !== undefined &&
+    (typeof recommendationRank !== "number" ||
+      !Number.isInteger(recommendationRank) ||
+      recommendationRank < 1 ||
+      recommendationRank > 1000)
+  ) {
+    throw new InvalidInteractionEventError(
+      "recommendationRank must be an integer between 1 and 1000",
+    );
+  }
+  const surface = payload.surface;
+  if (
+    surface !== null &&
+    surface !== undefined &&
+    !["home", "product_detail", "recommendations_page"].includes(
+      String(surface),
+    )
+  ) {
+    throw new InvalidInteractionEventError("surface is not supported");
   }
 
   return {
@@ -120,7 +188,8 @@ export function validateInteractionEvent(
     aggregateId: requireString(event.aggregateId, "aggregateId", 128),
     metadata: validateMetadata(event.metadata),
     data: {
-      interactionType: interactionType as RecommendationInteractionRecordedEvent["data"]["interactionType"],
+      interactionType:
+        interactionType as RecommendationInteractionRecordedEvent["data"]["interactionType"],
       userId,
       sessionId,
       productId,
@@ -131,6 +200,30 @@ export function validateInteractionEvent(
       position: position === null || position === undefined ? null : position,
       quantity: quantity === null || quantity === undefined ? null : quantity,
       requestId: optionalString(payload.requestId, "requestId", 128),
+      recommendationRequestId: optionalString(
+        payload.recommendationRequestId,
+        "recommendationRequestId",
+        128,
+      ),
+      recommendationItemId: optionalString(
+        payload.recommendationItemId,
+        "recommendationItemId",
+        128,
+      ),
+      recommendationSource: optionalString(
+        payload.recommendationSource,
+        "recommendationSource",
+        80,
+      ),
+      recommendationRank:
+        recommendationRank === null || recommendationRank === undefined
+          ? null
+          : recommendationRank,
+      surface: optionalString(
+        payload.surface,
+        "surface",
+        32,
+      ) as RecommendationInteractionRecordedEvent["data"]["surface"],
     },
   };
 }

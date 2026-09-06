@@ -3,11 +3,12 @@
 import { Global, Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { KafkaProducerService } from "./producers/kafka-producer.service";
+import { KafkaEventProcessor } from "./consumers/processors/kafka-event.processor";
 
 @Global()
 @Module({
   imports: [ConfigModule],
-  providers: [KafkaProducerService],
-  exports: [KafkaProducerService],
+  providers: [KafkaProducerService, KafkaEventProcessor],
+  exports: [KafkaProducerService, KafkaEventProcessor],
 })
 export class KafkaModule {}

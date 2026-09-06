@@ -8,8 +8,21 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Consumer, Kafka } from "kafkajs";
-import { InteractionMessageProcessor } from "../../modules/interactions/application/services/interaction-message-processor.service";
-import { RECOMMENDATION_INTERACTIONS_TOPIC } from "../kafka.constants";
+import { InteractionMessageProcessor } from "./processors/interaction-message.processor";
+import { CatalogService } from "../../modules/catalog/application/services/catalog.service";
+import { ProfileProjectionService } from "../../modules/profiles/application/services/profile/profile-projection.service";
+import { KafkaEventProcessor } from "./processors/kafka-event.processor";
+import {
+  validateCatalogEvent,
+  validatePurchaseEvent,
+} from "./validators/event.validators";
+import {
+  RECOMMENDATION_CATALOG_DLQ_TOPIC,
+  RECOMMENDATION_CATALOG_TOPICS,
+  RECOMMENDATION_INTERACTIONS_TOPIC,
+  RECOMMENDATION_PURCHASE_DLQ_TOPIC,
+  RECOMMENDATION_PURCHASE_TOPICS,
+} from "../config/kafka.constants";
 
 @Injectable()
 export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
@@ -21,6 +34,9 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly processor: InteractionMessageProcessor,
+    private readonly catalog: CatalogService,
+    private readonly profile: ProfileProjectionService,
+    private readonly eventProcessor: KafkaEventProcessor,
   ) {
     const brokers = this.config
       .get<string>("KAFKA_BROKERS", "localhost:29092")
@@ -29,7 +45,10 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
       .filter(Boolean);
 
     this.consumer = new Kafka({
-      clientId: this.config.get<string>("KAFKA_CLIENT_ID", "recommendation-service"),
+      clientId: this.config.get<string>(
+        "KAFKA_CLIENT_ID",
+        "recommendation-service",
+      ),
       brokers,
       retry: { retries: 3 },
     }).consumer({
@@ -56,16 +75,44 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
   private async start(): Promise<void> {
     try {
       await this.consumer.connect();
-      await this.consumer.subscribe({
-        topic: RECOMMENDATION_INTERACTIONS_TOPIC,
-        fromBeginning: false,
-      });
+      for (const topic of [
+        RECOMMENDATION_INTERACTIONS_TOPIC,
+        ...RECOMMENDATION_CATALOG_TOPICS,
+        ...RECOMMENDATION_PURCHASE_TOPICS,
+      ]) {
+        await this.consumer.subscribe({ topic, fromBeginning: false });
+      }
       this.started = true;
-      this.logger.log(`Kafka consumer subscribed to ${RECOMMENDATION_INTERACTIONS_TOPIC}`);
+      this.logger.log(
+        `Kafka consumer subscribed to ${RECOMMENDATION_INTERACTIONS_TOPIC}`,
+      );
 
       await this.consumer.run({
-        eachMessage: async ({ message }) => {
-          await this.processor.process(message.value?.toString() ?? "");
+        eachMessage: async ({ topic, message }) => {
+          const rawMessage = message.value?.toString() ?? "";
+          if (topic === RECOMMENDATION_INTERACTIONS_TOPIC) {
+            await this.processor.process(rawMessage);
+            return;
+          }
+          if (
+            (RECOMMENDATION_CATALOG_TOPICS as readonly string[]).includes(topic)
+          ) {
+            await this.eventProcessor.process(
+              rawMessage,
+              topic,
+              RECOMMENDATION_CATALOG_DLQ_TOPIC,
+              validateCatalogEvent,
+              (event) => this.catalog.processEvent(event),
+            );
+            return;
+          }
+          await this.eventProcessor.process(
+            rawMessage,
+            topic,
+            RECOMMENDATION_PURCHASE_DLQ_TOPIC,
+            validatePurchaseEvent,
+            (event) => this.profile.projectPurchase(event),
+          );
         },
       });
     } catch (error) {

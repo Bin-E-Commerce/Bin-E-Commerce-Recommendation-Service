@@ -1,7 +1,7 @@
 // Test này kiểm tra retry và DLQ boundary mà không cần khởi động Kafka thật.
 /// <reference types="jest" />
-import { InvalidInteractionEventError } from "../errors/invalid-interaction-event.error";
-import { InteractionMessageProcessor } from "./interaction-message-processor.service";
+import { InvalidInteractionEventError } from "../../../modules/interactions/application/errors/invalid-interaction-event.error";
+import { InteractionMessageProcessor } from "./interaction-message.processor";
 
 describe("InteractionMessageProcessor", () => {
   afterEach(() => {

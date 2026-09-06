@@ -209,6 +209,24 @@ Phase 1 introduces the `recommendation_interactions` table with these data group
 
 The schema is created by the versioned migration `1788020000000-create-recommendation-interactions`.
 
+## Phase 2 Implementation
+
+Phase 2 turns the interaction ledger into a usable, explainable recommendation read model:
+
+- PostgreSQL stores actor profiles, normalized preferences, catalog snapshots, popularity aggregates, and projection idempotency records.
+- Kafka consumers project interaction, catalog, and completed-purchase events without reading another service's database.
+- Redis stores short-lived session intent and five-minute recommendation results; PostgreSQL remains the durable source of truth.
+- Candidate generation combines product/category/brand affinity, recent context, trending, best-selling, newest, and deterministic exploration sources.
+- Rule-based ranking applies profile affinity, session context, popularity, freshness, quality, exploration, diversity constraints, and reason mapping.
+- `GET /api/v1/recommendation/recommendations` performs backend pagination (maximum 24 items per page). Guests can read page one; authenticated users can continue paging.
+- `POST /api/v1/recommendation/profile/merge` merges an anonymous session profile into the authenticated user's profile idempotently.
+
+### Catalog bootstrap
+
+Set `CATALOG_BOOTSTRAP=true` and configure `INTERNAL_SERVICE_TOKEN` to import the existing public catalog from Product Service on startup. The same operation is available through the protected `POST /api/v1/recommendation/catalog/bootstrap` endpoint. Re-running the bootstrap is safe because catalog records are upserted by product ID.
+
+Phase 2 intentionally does not include embeddings, Qdrant, collaborative filtering, or ML ranking. Those capabilities can consume the stable profile and catalog contracts in later phases.
+
 ## Project Structure
 
 ```text
@@ -219,7 +237,10 @@ services/recommendation-service/
 │   │   └── migrations/                  # Versioned schema changes
 │   ├── modules/
 │   │   ├── health/                      # Runtime health boundary
-│   │   └── interactions/                # Phase 1: ingestion and persistence
+│   │   ├── interactions/                # Event ingestion and persistence
+│   │   ├── profiles/                    # Durable preferences and session intent
+│   │   ├── catalog/                     # Recommendation-owned product read model
+│   │   └── recommendation/              # Candidate, ranking, and serving API
 │   │       ├── application/             # Use cases, contracts, processing rules
 │   │       ├── infrastructure/          # Repository and Kafka adapters
 │   │       └── presentation/            # Controllers and DTO validation
@@ -245,7 +266,12 @@ Dependency direction is one-way: presentation calls application; application kno
 | `POSTGRES_DB`          | `bin_ecommerce_recommendation`   | Database owned by this service            |
 | `KAFKA_BROKERS`        | `localhost:29092`                | Broker address when running from the host |
 | `KAFKA_CLIENT_ID`      | `recommendation-service`         | Kafka client identity                     |
-| `KAFKA_CONSUMER_GROUP` | `recommendation-interactions-v1` | Phase 1 consumer group                    |
+| `KAFKA_CONSUMER_GROUP` | `recommendation-interactions-v1` | Interaction/profile projection group      |
+| `REDIS_HOST`            | `localhost`                      | Session and result cache host             |
+| `REDIS_PORT`            | `6379`                           | Session and result cache port             |
+| `PRODUCT_SERVICE_URL`   | `http://localhost:3008`          | Bootstrap-only catalog source             |
+| `CATALOG_BOOTSTRAP`     | `false`                          | Enable one-time catalog bootstrap         |
+| `INTERNAL_SERVICE_TOKEN`| —                               | Secret for catalog bootstrap              |
 
 See the complete sample in [.env.example](./.env.example). Local `.env` files are ignored by Git and must not be used as production secret sources.
 

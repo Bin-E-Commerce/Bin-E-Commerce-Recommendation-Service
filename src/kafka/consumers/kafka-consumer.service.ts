@@ -9,7 +9,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { Consumer, Kafka } from "kafkajs";
 import { InteractionMessageProcessor } from "./processors/interaction-message.processor";
-import { CatalogService } from "../../modules/catalog/application/services/catalog.service";
+import { CatalogService } from "../../modules/catalog/application/services/catalog/catalog.service";
 import { ProfileProjectionService } from "../../modules/profiles/application/services/profile/profile-projection.service";
 import { KafkaEventProcessor } from "./processors/kafka-event.processor";
 import {
@@ -29,6 +29,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaConsumerService.name);
   private readonly consumer: Consumer;
   private started = false;
+  private restartTimer?: NodeJS.Timeout;
 
   // Cấu hình group riêng cho interaction stream để có thể scale consumer mà không ảnh hưởng service khác.
   constructor(
@@ -66,8 +67,8 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
 
   // Disconnect an toàn nếu consumer đã kết nối thành công.
   async onModuleDestroy(): Promise<void> {
-    if (!this.started) return;
-    await this.consumer.disconnect();
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    await this.consumer.disconnect().catch(() => undefined);
     this.started = false;
   }
 
@@ -119,6 +120,14 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Kafka consumer is unavailable: ${this.getErrorMessage(error)}`,
       );
+      await this.consumer.disconnect().catch(() => undefined);
+      this.started = false;
+      if (!this.restartTimer) {
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = undefined;
+          void this.start();
+        }, Number(this.config.get<string>("KAFKA_RECONNECT_DELAY_MS", "5000")));
+      }
     }
   }
 

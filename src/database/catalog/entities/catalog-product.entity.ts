@@ -9,6 +9,7 @@ import { Column, Entity, Index, PrimaryColumn } from "typeorm";
 @Index("idx_recommendation_catalog_origin", ["originType", "status"])
 @Index("idx_recommendation_catalog_created", ["createdAt"])
 @Index("idx_recommendation_catalog_updated", ["updatedAt"])
+@Index("idx_recommendation_catalog_embedding_status", ["embeddingStatus"])
 export class RecommendationCatalogProductEntity {
   // Product ID từ Product Service; dùng làm khóa chính của catalog read model và không tạo foreign key cross-service.
   @PrimaryColumn({ name: "product_id", type: "varchar", length: 128 })
@@ -19,11 +20,11 @@ export class RecommendationCatalogProductEntity {
   originType!: "INTERNAL" | "EXTERNAL";
 
   // Tên hiển thị trên recommendation card; snapshot tại thời điểm catalog event được xử lý.
-  @Column({ type: "varchar", length: 255 })
+  @Column({ type: "varchar", length: 500 })
   name!: string;
 
   // Slug public dùng để tạo URL hoặc định tuyến tới trang chi tiết sản phẩm.
-  @Column({ type: "varchar", length: 255 })
+  @Column({ type: "varchar", length: 620 })
   slug!: string;
 
   // Ảnh đại diện đã chọn từ Product Service; nullable vì sản phẩm có thể chưa có media hợp lệ.
@@ -83,6 +84,41 @@ export class RecommendationCatalogProductEntity {
   updatedAt!: Date;
 
   // Version monotonic của catalog event; ngăn event cũ ghi đè snapshot mới hơn khi Kafka đến không đúng thứ tự.
-  @Column({ name: "catalog_version", type: "integer", default: 1 })
-  catalogVersion!: number;
+  @Column({ name: "catalog_version", type: "bigint", default: 1 })
+  catalogVersion!: string;
+
+  // Mô tả ngắn dùng trong semantic text; không dùng làm nguồn hiển thị authoritative của Product Service.
+  @Column({ name: "short_description", type: "text", nullable: true })
+  shortDescription!: string | null;
+
+  // Mô tả đã strip HTML, được giới hạn kích thước trước khi tạo embedding.
+  @Column({ name: "description", type: "text", nullable: true })
+  description!: string | null;
+
+  // Snapshot tên brand để semantic text có ngữ cảnh dễ hiểu hơn brand ID.
+  @Column({ name: "brand_name", type: "varchar", length: 255, nullable: true })
+  brandName!: string | null;
+
+  // Đường dẫn danh mục đã materialize, ví dụ Electronics > Camera > Tripod.
+  @Column({ name: "category_path", type: "text", nullable: true })
+  categoryPath!: string | null;
+
+  // Các thuộc tính semantic được giữ dạng JSONB để không tạo schema cứng cho từng ngành hàng.
+  @Column({ name: "semantic_attributes", type: "jsonb", default: () => "'[]'::jsonb" })
+  semanticAttributes!: Array<{ key: string; value: string }>;
+
+  // Hash ổn định của semantic fields; đổi giá/stock không làm tạo embedding mới.
+  @Column({ name: "content_hash", type: "varchar", length: 128, nullable: true })
+  contentHash!: string | null;
+
+  // Trạng thái lifecycle embedding được dispatcher và generated-event consumer cập nhật.
+  @Column({ name: "embedding_status", type: "varchar", length: 16, default: "NOT_REQUIRED" })
+  embeddingStatus!: "NOT_REQUIRED" | "PENDING" | "PROCESSING" | "READY" | "STALE" | "FAILED";
+
+  // Model/dimension của vector hiện tại, dùng để chặn completion stale hoặc sai collection.
+  @Column({ name: "embedding_model_version", type: "varchar", length: 128, nullable: true })
+  embeddingModelVersion!: string | null;
+
+  @Column({ name: "embedding_dimensions", type: "integer", nullable: true })
+  embeddingDimensions!: number | null;
 }

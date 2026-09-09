@@ -7,6 +7,16 @@ export const RECOMMENDATION_CATALOG_DLQ_TOPIC =
   "recommendation.catalog.dlq.v1";
 export const RECOMMENDATION_PURCHASE_DLQ_TOPIC =
   "recommendation.purchase.dlq.v1";
+export const RECOMMENDATION_EMBEDDING_REQUESTED_TOPIC =
+  "recommendation.product-embedding.requested.v1";
+export const RECOMMENDATION_EMBEDDING_GENERATED_TOPIC =
+  "recommendation.product-embedding.generated.v1";
+export const RECOMMENDATION_EMBEDDING_DLQ_TOPIC =
+  "recommendation.product-embedding.dlq.v1";
+export const RECOMMENDATION_RELATION_DLQ_TOPIC =
+  "recommendation.relations.dlq.v1";
+export const RECOMMENDATION_RELATION_GROUP = "recommendation-relations-v1";
+export const RECOMMENDATION_EMBEDDING_GROUP = "recommendation-embeddings-v1";
 export const DEFAULT_KAFKA_RETRY_ATTEMPTS = 3;
 export const RECOMMENDATION_CATALOG_TOPICS = [
   "product.catalog.upserted",

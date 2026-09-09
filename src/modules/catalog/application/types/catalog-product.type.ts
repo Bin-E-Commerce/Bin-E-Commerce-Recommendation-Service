@@ -19,7 +19,16 @@ export interface RecommendationCatalogProduct {
   isInStock: boolean;
   createdAt: Date;
   updatedAt: Date;
-  catalogVersion: number;
+  catalogVersion: string;
+  shortDescription: string | null;
+  description: string | null;
+  brandName: string | null;
+  categoryPath: string | null;
+  semanticAttributes: Array<{ key: string; value: string }>;
+  contentHash: string | null;
+  embeddingStatus: "NOT_REQUIRED" | "PENDING" | "PROCESSING" | "READY" | "STALE" | "FAILED";
+  embeddingModelVersion: string | null;
+  embeddingDimensions: number | null;
 }
 
 // Query options dùng chung giữa candidate application service và catalog persistence adapter.
@@ -46,4 +55,16 @@ export interface CatalogBootstrapItem {
   externalShop?: { id: string } | null;
   brand?: { id: string } | null;
   images?: Array<{ imageUrl: string; sortOrder?: number }>;
+  imageUrl?: string | null;
+  isInStock?: boolean;
+  status?: "ACTIVE" | "INACTIVE" | "DELETED";
+  createdAt?: string;
+  updatedAt?: string;
+  description?: string | null;
+  shortDescription?: string | null;
+  brandName?: string | null;
+  categoryPath?: string | null;
+  semanticAttributes?: Array<{ key: string; value: string }>;
+  contentHash?: string | null;
+  catalogVersion?: string;
 }

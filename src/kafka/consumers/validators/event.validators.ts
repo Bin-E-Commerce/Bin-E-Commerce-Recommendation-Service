@@ -76,8 +76,8 @@ export function validateCatalogEvent(
   const event = requireEnvelope(input, catalogEventNames);
   const data = event.data as Record<string, unknown>;
   requireString(data.productId, "data.productId", 128);
-  requireString(data.name, "data.name");
-  requireString(data.slug, "data.slug");
+  requireString(data.name, "data.name", 500);
+  requireString(data.slug, "data.slug", 620);
   if (data.originType !== "INTERNAL" && data.originType !== "EXTERNAL") {
     throw new InvalidKafkaEventError("data.originType is not supported");
   }
@@ -93,15 +93,48 @@ export function validateCatalogEvent(
   if (typeof data.isInStock !== "boolean") {
     throw new InvalidKafkaEventError("data.isInStock must be boolean");
   }
-  if (
-    typeof data.catalogVersion !== "number" ||
-    !Number.isInteger(data.catalogVersion) ||
-    data.catalogVersion < 1
-  ) {
+  const rawRevision = data.catalogRevision ?? data.catalogVersion;
+  const catalogVersion = typeof rawRevision === "number" && Number.isInteger(rawRevision)
+    ? String(rawRevision)
+    : rawRevision;
+  if (typeof catalogVersion !== "string" || !/^\d+$/.test(catalogVersion) || BigInt(catalogVersion) < 1n) {
     throw new InvalidKafkaEventError(
-      "data.catalogVersion must be a positive integer",
+      "data.catalogVersion must be a positive numeric string",
     );
   }
+  // Cho phép replay event Phase 2 cũ; snapshot fallback chỉ dùng title nên vẫn deterministic và sẽ được re-embed khi event mới đến.
+  if (!data.semanticContent || typeof data.semanticContent !== "object") {
+    data.semanticContent = {
+      title: String(data.name).slice(0, 255),
+      shortDescription: null,
+      description: null,
+      brandName: null,
+      categoryPath: null,
+      attributes: [],
+      contentHash: `legacy:${String(data.productId)}:${catalogVersion}`,
+    };
+  }
+  const semanticContent = data.semanticContent as Record<string, unknown>;
+  requireString(semanticContent.title, "data.semanticContent.title", 255);
+  for (const field of ["shortDescription", "description", "brandName", "categoryPath"] as const) {
+    if (semanticContent[field] !== null && semanticContent[field] !== undefined) {
+      requireString(semanticContent[field], `data.semanticContent.${field}`, field === "description" ? 4000 : 1000);
+    }
+  }
+  requireString(semanticContent.contentHash, "data.semanticContent.contentHash", 128);
+  if (!Array.isArray(semanticContent.attributes) || semanticContent.attributes.length > 50) {
+    throw new InvalidKafkaEventError("data.semanticContent.attributes must contain at most 50 items");
+  }
+  for (const [index, attributeValue] of semanticContent.attributes.entries()) {
+    if (!attributeValue || typeof attributeValue !== "object" || Array.isArray(attributeValue)) {
+      throw new InvalidKafkaEventError(`data.semanticContent.attributes[${index}] must be an object`);
+    }
+    const attribute = attributeValue as Record<string, unknown>;
+    requireString(attribute.key, `data.semanticContent.attributes[${index}].key`, 128);
+    requireString(attribute.value, `data.semanticContent.attributes[${index}].value`, 500);
+  }
+  data.catalogRevision = catalogVersion;
+  data.catalogVersion = catalogVersion;
   requireIsoDate(data.createdAt, "data.createdAt");
   requireIsoDate(data.updatedAt, "data.updatedAt");
   return event as unknown as RecommendationCatalogEvent;
@@ -138,6 +171,12 @@ export function validatePurchaseEvent(
     const item = itemValue as Record<string, unknown>;
     requireString(item.orderItemId, `data.items[${index}].orderItemId`, 128);
     requireString(item.productId, `data.items[${index}].productId`, 128);
+    if (item.variantId !== null && item.variantId !== undefined) {
+      requireString(item.variantId, `data.items[${index}].variantId`, 128);
+    }
+    if (item.categoryId !== null && item.categoryId !== undefined) {
+      requireString(item.categoryId, `data.items[${index}].categoryId`, 128);
+    }
     if (
       typeof item.quantity !== "number" ||
       !Number.isInteger(item.quantity) ||

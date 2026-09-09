@@ -42,6 +42,11 @@ export class RecommendationInteractionRepository {
       recommendationSource: event.data.recommendationSource ?? null,
       recommendationRank: event.data.recommendationRank ?? null,
       surface: event.data.surface ?? null,
+      recommendationPolicyVersion:
+        event.data.recommendationPolicyVersion ?? null,
+      recommendationExperimentId: event.data.recommendationExperimentId ?? null,
+      recommendationExperimentVariant:
+        event.data.recommendationExperimentVariant ?? null,
       metadata: { ...(event.metadata ?? {}) },
       processingStatus: "PROCESSED",
       processingError: null,

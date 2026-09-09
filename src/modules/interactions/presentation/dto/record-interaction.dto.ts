@@ -78,12 +78,27 @@ export class RecordInteractionDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(0)
+  @Min(1)
   @Max(1000)
   recommendationRank?: number;
 
   @IsOptional()
   @IsString()
+  @IsIn(["home", "product_detail", "recommendations_page"])
   @MaxLength(32)
   surface?: "home" | "product_detail" | "recommendations_page";
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  recommendationPolicyVersion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  recommendationExperimentId?: string;
+
+  @IsOptional()
+  @IsIn(["CONTROL", "HYBRID"])
+  recommendationExperimentVariant?: "CONTROL" | "HYBRID";
 }

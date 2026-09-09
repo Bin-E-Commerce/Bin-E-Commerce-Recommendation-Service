@@ -12,11 +12,29 @@ import type { RecommendationInteractionType } from "../../../../../../../../pack
 import { KafkaProducerService } from "../../../../../kafka/producers/kafka-producer.service";
 import { RECOMMENDATION_INTERACTIONS_TOPIC } from "../../../../../kafka/config/kafka.constants";
 import type { RecordInteractionDto } from "../../../presentation/dto/record-interaction.dto";
+import {
+  RecommendationTrackingTokenService,
+  type RecommendationTrackingTokenInput,
+} from "../../../../recommendation/application/services/tracking/attribution/recommendation-tracking-token.service";
+
+type RecommendationAttribution = {
+  recommendationRequestId: string | null;
+  recommendationItemId: string | null;
+  recommendationSource: string | null;
+  recommendationRank: number | null;
+  surface: RecommendationTrackingTokenInput["surface"] | null;
+  recommendationPolicyVersion: string | null;
+  recommendationExperimentId: string | null;
+  recommendationExperimentVariant: "CONTROL" | "HYBRID" | null;
+};
 
 @Injectable()
 export class InteractionIngestionService {
   // Producer là boundary duy nhất để HTTP request trở thành durable event.
-  constructor(private readonly kafkaProducer: KafkaProducerService) {}
+  constructor(
+    private readonly kafkaProducer: KafkaProducerService,
+    private readonly trackingToken: RecommendationTrackingTokenService,
+  ) {}
 
   // Tạo event accepted với actor từ trusted Gateway headers và trả eventId để trace request.
   async record(
@@ -33,6 +51,7 @@ export class InteractionIngestionService {
       );
     }
 
+    const attribution = this.validateRecommendationAttribution(dto, actorId);
     const eventId = randomUUID();
     const event = {
       eventId,
@@ -54,11 +73,15 @@ export class InteractionIngestionService {
         position: dto.position ?? null,
         quantity: dto.quantity ?? null,
         requestId: this.getHeader(request, "x-request-id"),
-        recommendationRequestId: dto.recommendationRequestId?.trim() || null,
-        recommendationItemId: dto.recommendationItemId?.trim() || null,
-        recommendationSource: dto.recommendationSource?.trim() || null,
-        recommendationRank: dto.recommendationRank ?? null,
-        surface: dto.surface ?? null,
+        recommendationRequestId: attribution.recommendationRequestId,
+        recommendationItemId: attribution.recommendationItemId,
+        recommendationSource: attribution.recommendationSource,
+        recommendationRank: attribution.recommendationRank,
+        surface: attribution.surface,
+        recommendationPolicyVersion: attribution.recommendationPolicyVersion,
+        recommendationExperimentId: attribution.recommendationExperimentId,
+        recommendationExperimentVariant:
+          attribution.recommendationExperimentVariant,
       },
     };
 
@@ -90,6 +113,92 @@ export class InteractionIngestionService {
           value,
         )
       : false;
+  }
+
+  // Chỉ chấp nhận attribution do Recommendation Service ký; metadata tự khai từ browser không được đi vào A/B metrics.
+  private validateRecommendationAttribution(
+    dto: RecordInteractionDto,
+    actorId: string,
+  ): RecommendationAttribution {
+    const recommendationRequestId = dto.recommendationRequestId?.trim() || null;
+    const recommendationItemId = dto.recommendationItemId?.trim() || null;
+    const recommendationSource = dto.recommendationSource?.trim() || null;
+    const recommendationPolicyVersion =
+      dto.recommendationPolicyVersion?.trim() || null;
+    const recommendationExperimentId =
+      dto.recommendationExperimentId?.trim() || null;
+    const recommendationExperimentVariant =
+      dto.recommendationExperimentVariant ?? null;
+    const hasAnyAttribution = Boolean(
+      recommendationRequestId ||
+      recommendationItemId ||
+      recommendationSource ||
+      dto.recommendationRank !== undefined ||
+      dto.surface ||
+      recommendationPolicyVersion ||
+      recommendationExperimentId ||
+      recommendationExperimentVariant,
+    );
+
+    if (!recommendationRequestId) {
+      if (hasAnyAttribution) {
+        throw new BadRequestException(
+          "Recommendation attribution requires a signed item token",
+        );
+      }
+      return {
+        recommendationRequestId: null,
+        recommendationItemId: null,
+        recommendationSource: null,
+        recommendationRank: null,
+        surface: null,
+        recommendationPolicyVersion: null,
+        recommendationExperimentId: null,
+        recommendationExperimentVariant: null,
+      };
+    }
+
+    const recommendationRank = dto.recommendationRank ?? null;
+    const surface = dto.surface ?? null;
+    if (
+      !recommendationItemId ||
+      !recommendationSource ||
+      recommendationRank === null ||
+      !surface ||
+      !["home", "product_detail", "recommendations_page"].includes(surface) ||
+      !recommendationPolicyVersion ||
+      !dto.productId?.trim()
+    ) {
+      throw new BadRequestException(
+        "Incomplete recommendation attribution context",
+      );
+    }
+
+    const isValid = this.trackingToken.verify(recommendationItemId, {
+      actorId,
+      requestId: recommendationRequestId,
+      productId: dto.productId?.trim() ?? "",
+      rank: recommendationRank,
+      source: recommendationSource,
+      surface,
+      policyVersion: recommendationPolicyVersion,
+      experimentId: recommendationExperimentId,
+      experimentVariant: recommendationExperimentVariant,
+    });
+    if (!isValid) {
+      throw new BadRequestException("Invalid recommendation attribution");
+    }
+
+    return {
+      recommendationRequestId,
+      recommendationItemId,
+      recommendationSource,
+      recommendationRank,
+      surface,
+      recommendationPolicyVersion,
+      recommendationExperimentId,
+      recommendationExperimentVariant,
+    };
   }
 
   // Metadata chỉ phục vụ trace; không forward toàn bộ headers hoặc dữ liệu nhạy cảm vào Kafka.

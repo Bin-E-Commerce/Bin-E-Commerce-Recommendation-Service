@@ -178,6 +178,17 @@ export function validateInteractionEvent(
   ) {
     throw new InvalidInteractionEventError("surface is not supported");
   }
+  const recommendationExperimentVariant =
+    payload.recommendationExperimentVariant;
+  if (
+    recommendationExperimentVariant !== null &&
+    recommendationExperimentVariant !== undefined &&
+    !["CONTROL", "HYBRID"].includes(String(recommendationExperimentVariant))
+  ) {
+    throw new InvalidInteractionEventError(
+      "recommendationExperimentVariant is not supported",
+    );
+  }
 
   return {
     eventId: requireString(event.eventId, "eventId", 128),
@@ -224,6 +235,21 @@ export function validateInteractionEvent(
         "surface",
         32,
       ) as RecommendationInteractionRecordedEvent["data"]["surface"],
+      recommendationPolicyVersion: optionalString(
+        payload.recommendationPolicyVersion,
+        "recommendationPolicyVersion",
+        64,
+      ),
+      recommendationExperimentId: optionalString(
+        payload.recommendationExperimentId,
+        "recommendationExperimentId",
+        128,
+      ),
+      recommendationExperimentVariant:
+        recommendationExperimentVariant === null ||
+        recommendationExperimentVariant === undefined
+          ? null
+          : (recommendationExperimentVariant as "CONTROL" | "HYBRID"),
     },
   };
 }

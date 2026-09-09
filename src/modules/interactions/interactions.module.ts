@@ -12,9 +12,16 @@ import { InteractionProcessingService } from "./application/services/processing/
 import { RecommendationInteractionRepository } from "./infrastructure/repositories/recommendation-interaction.repository";
 import { ProfilesModule } from "../profiles/profiles.module";
 import { CatalogModule } from "../catalog/catalog.module";
+import { RecommendationModule } from "../recommendation/recommendation.module";
 
 @Module({
-  imports: [KafkaModule, ProfilesModule, CatalogModule, TypeOrmModule.forFeature([RecommendationInteractionEntity])],
+  imports: [
+    KafkaModule,
+    ProfilesModule,
+    CatalogModule,
+    RecommendationModule,
+    TypeOrmModule.forFeature([RecommendationInteractionEntity]),
+  ],
   controllers: [InteractionController],
   providers: [
     InteractionIngestionService,

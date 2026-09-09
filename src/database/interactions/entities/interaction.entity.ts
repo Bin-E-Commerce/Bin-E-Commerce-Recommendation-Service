@@ -101,6 +101,18 @@ export class RecommendationInteractionEntity {
   @Column({ type: "varchar", length: 32, nullable: true })
   surface!: string | null;
 
+  // Version policy đã tạo recommendation; dùng để phân tách metrics giữa control và hybrid.
+  @Column({ name: "recommendation_policy_version", type: "varchar", length: 64, nullable: true })
+  recommendationPolicyVersion!: string | null;
+
+  // ID experiment deterministic; nullable vì interaction ngoài recommendation không có experiment.
+  @Column({ name: "recommendation_experiment_id", type: "varchar", length: 128, nullable: true })
+  recommendationExperimentId!: string | null;
+
+  // Variant actor đã nhận; chỉ nhận CONTROL hoặc HYBRID từ validator trước persistence.
+  @Column({ name: "recommendation_experiment_variant", type: "varchar", length: 16, nullable: true })
+  recommendationExperimentVariant!: "CONTROL" | "HYBRID" | null;
+
   // Metadata trace tối thiểu; không dùng để thay thế các cột truy vấn chính và không chứa token/PII nhạy cảm.
   @Column({ type: "jsonb", default: {} })
   metadata!: Record<string, string>;

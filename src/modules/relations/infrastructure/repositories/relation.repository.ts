@@ -136,28 +136,41 @@ export class RelationRepository {
     }>
   > {
     if (!sourceProductIds.length) return [];
-    const halfLifeDays = Math.max(
-      Number(this.config.get<string>("RELATION_SCORE_HALF_LIFE_DAYS", "30")),
-      1,
+    const configuredHalfLifeDays = Number(
+      this.config.get<string>("RELATION_SCORE_HALF_LIFE_DAYS", "30"),
     );
+    const halfLifeDays =
+      Number.isFinite(configuredHalfLifeDays) && configuredHalfLifeDays > 0
+        ? configuredHalfLifeDays
+        : 30;
     const effectiveScore = `(relation.relation_score * power(0.5, extract(epoch from (now() - relation.last_signal_at)) / ${halfLifeDays * 86400}))`;
-    const rows = await this.relations
-      .createQueryBuilder("relation")
-      .select([
-        'relation.targetProductId AS "productId"',
-        `${effectiveScore} AS \"rawScore\"`,
-        'relation.relationType AS "relationType"',
-        'relation.sourceProductId AS "anchorProductId"',
-      ])
-      .where("relation.source_product_id IN (:...sourceProductIds)", {
-        sourceProductIds,
-      })
-      .andWhere("relation.relation_type IN (:...types)", { types })
-      .andWhere(`${effectiveScore} > 0`)
-      .orderBy("rawScore", "DESC")
-      .addOrderBy("relation.target_product_id", "ASC")
-      .limit(Math.min(limit, 100))
-      .getRawMany();
+    const rows = (await this.relations.query(
+      `WITH ranked AS (
+         SELECT
+           relation.target_product_id AS "productId",
+           ${effectiveScore} AS "rawScore",
+           relation.relation_type AS "relationType",
+           relation.source_product_id AS "anchorProductId",
+           ROW_NUMBER() OVER (
+             PARTITION BY relation.source_product_id, relation.relation_type
+             ORDER BY ${effectiveScore} DESC, relation.target_product_id ASC
+           ) AS row_number
+         FROM recommendation_product_relations relation
+         WHERE relation.source_product_id = ANY($1)
+           AND relation.relation_type = ANY($2)
+           AND ${effectiveScore} > 0
+       )
+       SELECT "productId", "rawScore", "relationType", "anchorProductId"
+       FROM ranked
+       WHERE row_number <= $3
+       ORDER BY "rawScore" DESC, "productId" ASC`,
+      [sourceProductIds, types, Math.min(Math.max(limit, 1), 100)],
+    )) as Array<{
+      productId: string;
+      rawScore: number | string;
+      relationType: RelationType;
+      anchorProductId: string;
+    }>;
     return rows.map((row) => ({ ...row, rawScore: Number(row.rawScore) }));
   }
 
@@ -172,7 +185,11 @@ export class RelationRepository {
       `DELETE FROM recommendation_product_relations relation
         WHERE relation.id IN (
           SELECT id FROM (
-            SELECT id, ROW_NUMBER() OVER (ORDER BY relation_score DESC, target_product_id ASC) AS row_number
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                     ORDER BY (relation_score * power(0.5, extract(epoch from (now() - last_signal_at)) / ${this.halfLifeSeconds()})) DESC,
+                              target_product_id ASC
+                   ) AS row_number
             FROM recommendation_product_relations
             WHERE source_product_id = $1 AND relation_type = $2
           ) ranked
@@ -180,5 +197,15 @@ export class RelationRepository {
         )`,
       [sourceProductId, relationType, Math.min(Math.max(keep, 1), 100)],
     );
+  }
+
+  // Chuẩn hóa half-life trước khi chèn vào SQL động để decay/prune không tạo biểu thức sai hoặc chia cho 0.
+  private halfLifeSeconds(): number {
+    const configured = Number(
+      this.config.get<string>("RELATION_SCORE_HALF_LIFE_DAYS", "30"),
+    );
+    const days =
+      Number.isFinite(configured) && configured > 0 ? configured : 30;
+    return days * 86_400;
   }
 }

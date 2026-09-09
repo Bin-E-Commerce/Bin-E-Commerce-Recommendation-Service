@@ -32,10 +32,26 @@ export class RelationProjectionService {
       type === "CO_VIEW"
         ? ["PRODUCT_VIEWED", "PRODUCT_CLICKED", "PRODUCT_IMPRESSED"]
         : ["PRODUCT_ADDED_TO_CART"];
+    const configuredWeight =
+      event.data.interactionType === "PRODUCT_CLICKED"
+        ? Number(this.config.get<string>("RELATION_CO_CLICK_WEIGHT", "2"))
+        : event.data.interactionType === "PRODUCT_IMPRESSED"
+          ? Number(
+              this.config.get<string>("RELATION_CO_IMPRESSION_WEIGHT", "0.05"),
+            )
+          : type === "CO_VIEW"
+            ? Number(this.config.get<string>("RELATION_CO_VIEW_WEIGHT", "1"))
+            : Number(this.config.get<string>("RELATION_CO_CART_WEIGHT", "3"));
     const weight =
-      type === "CO_VIEW"
-        ? Number(this.config.get<string>("RELATION_CO_VIEW_WEIGHT", "1"))
-        : Number(this.config.get<string>("RELATION_CO_CART_WEIGHT", "3"));
+      Number.isFinite(configuredWeight) && configuredWeight > 0
+        ? configuredWeight
+        : type === "CO_CART"
+          ? 3
+          : event.data.interactionType === "PRODUCT_IMPRESSED"
+            ? 0.05
+            : event.data.interactionType === "PRODUCT_CLICKED"
+              ? 2
+              : 1;
     await this.repository.withProjection(
       event.eventId,
       type,
@@ -81,9 +97,13 @@ export class RelationProjectionService {
       ...new Set(event.data.items.map((item) => item.productId)),
     ].slice(0, 50);
     const returned = event.eventName === "order.purchase.returned";
-    const score = Number(
+    const configuredScore = Number(
       this.config.get<string>("RELATION_CO_PURCHASE_WEIGHT", "6"),
     );
+    const score =
+      Number.isFinite(configuredScore) && configuredScore > 0
+        ? configuredScore
+        : 6;
     const now = new Date(event.data.occurredAt);
     if (Number.isNaN(now.getTime()))
       throw new Error("INVALID_PURCHASE_OCCURRED_AT");

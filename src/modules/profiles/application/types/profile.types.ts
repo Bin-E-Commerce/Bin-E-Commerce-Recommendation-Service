@@ -16,6 +16,11 @@ export interface PreferenceValue {
 export interface SessionContext {
   sessionId: string;
   recentProductIds: string[];
+  recentProductSignals?: Array<{
+    productId: string;
+    weight: number;
+    interactionType: string;
+  }>;
   recentCategoryIds: string[];
   recentBrandIds: string[];
   currentProductId: string | null;

@@ -1,11 +1,20 @@
 // Entity này lưu trạng thái tổng hợp của user hoặc guest session; không chứa PII và không thay thế interaction ledger.
 
-import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from "typeorm";
 
 export type RecommendationActorType = "USER" | "SESSION";
 
 @Entity("recommendation_actor_profiles")
-@Index("uq_recommendation_actor_profiles_actor", ["actorType", "actorId"], { unique: true })
+@Index("uq_recommendation_actor_profiles_actor", ["actorType", "actorId"], {
+  unique: true,
+})
 export class RecommendationActorProfileEntity {
   // Khóa nội bộ của profile record, không phải user ID và không dùng để định danh actor ở API.
   @PrimaryGeneratedColumn("uuid")
@@ -30,6 +39,15 @@ export class RecommendationActorProfileEntity {
   // Thời điểm session guest đã được merge vào user; có giá trị thì merge lặp lại phải trở thành no-op.
   @Column({ name: "merged_at", type: "timestamptz", nullable: true })
   mergedAt!: Date | null;
+
+  // User đích của session sau merge; giúp event Kafka đến trễ tiếp tục cập nhật đúng user profile.
+  @Column({
+    name: "merged_user_id",
+    type: "varchar",
+    length: 128,
+    nullable: true,
+  })
+  mergedUserId!: string | null;
 
   // Thời điểm record được tạo lần đầu, phục vụ audit vòng đời profile.
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })

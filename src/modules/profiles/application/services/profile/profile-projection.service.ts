@@ -35,35 +35,51 @@ export class ProfileProjectionService {
     const catalogProduct = event.data.productId
       ? (await this.catalog.findByIds([event.data.productId]))[0]
       : undefined;
-    const categoryId = event.data.categoryId ?? catalogProduct?.categoryId ?? null;
+    const categoryId =
+      event.data.categoryId ?? catalogProduct?.categoryId ?? null;
     const brandId = catalogProduct?.brandId ?? null;
-    const projected = await this.projectionRepository.transaction(async (manager) => {
-      if (!(await this.projectionRepository.claimProjectionEvent(event.eventId, manager))) {
-        return false;
-      }
+    const projected = await this.projectionRepository.transaction(
+      async (manager) => {
+        if (!event.data.userId && event.data.sessionId) {
+          await this.projectionRepository.lockSessionMerge(
+            event.data.sessionId,
+            manager,
+          );
+        }
+        if (
+          !(await this.projectionRepository.claimProjectionEvent(
+            event.eventId,
+            manager,
+          ))
+        ) {
+          return false;
+        }
 
-      const weight = this.rules.getInteractionWeight(event.data.interactionType);
-      const actor = this.getInteractionActor(event);
-      if (actor) {
-        await this.projectionRepository.upsertActorProfile(
-          actor.actorType,
-          actor.actorId,
-          new Date(event.occurredAt),
-          manager,
+        const weight = this.rules.getInteractionWeight(
+          event.data.interactionType,
         );
-        await this.applyInteractionPreferences(
-          actor,
-          event,
-          categoryId,
-          brandId,
-          weight,
-          manager,
-        );
-      }
+        const actor = await this.resolveInteractionActor(event, manager);
+        if (actor) {
+          await this.projectionRepository.upsertActorProfile(
+            actor.actorType,
+            actor.actorId,
+            new Date(event.occurredAt),
+            manager,
+          );
+          await this.applyInteractionPreferences(
+            actor,
+            event,
+            categoryId,
+            brandId,
+            weight,
+            manager,
+          );
+        }
 
-      await this.popularity.applyInteraction(event, manager);
-      return true;
-    });
+        await this.popularity.applyInteraction(event, manager);
+        return true;
+      },
+    );
 
     if (!projected) return;
     await this.sessionContext.apply(event, categoryId, brandId);
@@ -80,45 +96,52 @@ export class ProfileProjectionService {
   // Project purchase/return với weight mạnh hơn browsing và dùng cùng projection ledger để chống duplicate.
   async projectPurchase(event: OrderPurchaseEvent): Promise<void> {
     const weight = event.eventName === "order.purchase.returned" ? -8 : 8;
-    const projected = await this.projectionRepository.transaction(async (manager) => {
-      if (!(await this.projectionRepository.claimProjectionEvent(event.eventId, manager))) {
-        return false;
-      }
+    const projected = await this.projectionRepository.transaction(
+      async (manager) => {
+        if (
+          !(await this.projectionRepository.claimProjectionEvent(
+            event.eventId,
+            manager,
+          ))
+        ) {
+          return false;
+        }
 
-      await this.projectionRepository.upsertActorProfile(
-        "USER",
-        event.data.customerUserId,
-        new Date(event.data.occurredAt),
-        manager,
-      );
-      for (const item of event.data.items) {
-        await this.upsertPreference(
-          {
-            actorType: "USER",
-            actorId: event.data.customerUserId,
-            dimension: "PRODUCT",
-            dimensionKey: item.productId,
-            score: weight * item.quantity,
-            occurredAt: new Date(event.data.occurredAt),
-          },
+        await this.projectionRepository.upsertActorProfile(
+          "USER",
+          event.data.customerUserId,
+          new Date(event.data.occurredAt),
           manager,
         );
-        await this.upsertPreference(
-          {
-            actorType: "USER",
-            actorId: event.data.customerUserId,
-            dimension: "CATEGORY",
-            dimensionKey: item.categoryId,
-            score: weight * item.quantity,
-            occurredAt: new Date(event.data.occurredAt),
-          },
-          manager,
-        );
-      }
+        for (const item of event.data.items) {
+          await this.upsertPreference(
+            {
+              actorType: "USER",
+              actorId: event.data.customerUserId,
+              dimension: "PRODUCT",
+              dimensionKey: item.productId,
+              score: weight * item.quantity,
+              occurredAt: new Date(event.data.occurredAt),
+            },
+            manager,
+          );
+          await this.upsertPreference(
+            {
+              actorType: "USER",
+              actorId: event.data.customerUserId,
+              dimension: "CATEGORY",
+              dimensionKey: item.categoryId,
+              score: weight * item.quantity,
+              occurredAt: new Date(event.data.occurredAt),
+            },
+            manager,
+          );
+        }
 
-      await this.popularity.applyPurchase(event, manager);
-      return true;
-    });
+        await this.popularity.applyPurchase(event, manager);
+        return true;
+      },
+    );
 
     if (projected) {
       await this.redis.invalidateActor("user", event.data.customerUserId);
@@ -129,9 +152,28 @@ export class ProfileProjectionService {
   private getInteractionActor(
     event: RecommendationInteractionRecordedEvent,
   ): ProfileActor | null {
-    if (event.data.userId) return { actorType: "USER", actorId: event.data.userId };
-    if (event.data.sessionId) return { actorType: "SESSION", actorId: event.data.sessionId };
+    if (event.data.userId)
+      return { actorType: "USER", actorId: event.data.userId };
+    if (event.data.sessionId)
+      return { actorType: "SESSION", actorId: event.data.sessionId };
     return null;
+  }
+
+  // Chuyển event session đến sau login sang user đã merge để không làm mất tín hiệu đang chờ Kafka projection.
+  private async resolveInteractionActor(
+    event: RecommendationInteractionRecordedEvent,
+    manager: EntityManager,
+  ): Promise<ProfileActor | null> {
+    if (event.data.userId)
+      return { actorType: "USER", actorId: event.data.userId };
+    if (!event.data.sessionId) return null;
+    const mergedUserId = await this.projectionRepository.findMergedUserId(
+      event.data.sessionId,
+      manager,
+    );
+    return mergedUserId
+      ? { actorType: "USER", actorId: mergedUserId }
+      : this.getInteractionActor(event);
   }
 
   // Chuyển interaction thành các dimension preference và bỏ qua dimension thiếu key hoặc event không có weight.
@@ -150,7 +192,10 @@ export class ProfileProjectionService {
       { dimension: "PRODUCT", dimensionKey: event.data.productId },
       { dimension: "CATEGORY", dimensionKey: categoryId },
       { dimension: "BRAND", dimensionKey: brandId },
-      { dimension: "QUERY", dimensionKey: event.data.query?.toLowerCase() ?? null },
+      {
+        dimension: "QUERY",
+        dimensionKey: event.data.query?.toLowerCase() ?? null,
+      },
     ];
 
     for (const preference of preferences) {

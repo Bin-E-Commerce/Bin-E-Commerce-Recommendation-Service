@@ -31,21 +31,36 @@ export class SessionContextService {
       const previous = (await this.get(sessionId)) ?? this.empty(sessionId);
       const now = new Date(event.occurredAt).getTime();
       if (new Date(previous.intentUpdatedAt).getTime() > now) return;
+      const isPassiveImpression =
+        event.data.interactionType === "PRODUCT_IMPRESSED";
       const next: SessionContext = {
         ...previous,
-        currentProductId: event.data.productId ?? previous.currentProductId,
-        currentCategoryId:
-          categoryId ?? event.data.categoryId ?? previous.currentCategoryId,
+        currentProductId: isPassiveImpression
+          ? previous.currentProductId
+          : (event.data.productId ?? previous.currentProductId),
+        currentCategoryId: isPassiveImpression
+          ? previous.currentCategoryId
+          : (categoryId ?? event.data.categoryId ?? previous.currentCategoryId),
         latestQuery: event.data.query ?? previous.latestQuery,
-        recentProductIds: this.unshift(
-          event.data.productId,
-          previous.recentProductIds,
-        ),
-        recentCategoryIds: this.unshift(
-          categoryId ?? event.data.categoryId,
-          previous.recentCategoryIds,
-        ),
-        recentBrandIds: this.unshift(brandId, previous.recentBrandIds),
+        recentProductIds: isPassiveImpression
+          ? previous.recentProductIds
+          : this.unshift(event.data.productId, previous.recentProductIds),
+        recentProductSignals: isPassiveImpression
+          ? (previous.recentProductSignals ?? [])
+          : this.unshiftSignal(
+              event.data.productId,
+              event.data.interactionType,
+              previous.recentProductSignals ?? [],
+            ),
+        recentCategoryIds: isPassiveImpression
+          ? previous.recentCategoryIds
+          : this.unshift(
+              categoryId ?? event.data.categoryId,
+              previous.recentCategoryIds,
+            ),
+        recentBrandIds: isPassiveImpression
+          ? previous.recentBrandIds
+          : this.unshift(brandId, previous.recentBrandIds),
         cartProductIds: this.updateCart(
           event.data.interactionType,
           event.data.productId,
@@ -76,6 +91,7 @@ export class SessionContextService {
     return {
       sessionId,
       recentProductIds: [],
+      recentProductSignals: [],
       recentCategoryIds: [],
       recentBrandIds: [],
       currentProductId: null,
@@ -111,6 +127,27 @@ export class SessionContextService {
     if (type === "PRODUCT_REMOVED_FROM_CART")
       return values.filter((item) => item !== productId);
     return values;
+  }
+
+  // Lưu trọng số ngắn hạn để semantic retrieval phân biệt hành vi mạnh/yếu; impression không được đưa vào anchor.
+  private unshiftSignal(
+    productId: string | null | undefined,
+    interactionType: string,
+    values: SessionContext["recentProductSignals"],
+  ): NonNullable<SessionContext["recentProductSignals"]> {
+    if (!productId) return values ?? [];
+    const weights: Record<string, number> = {
+      PRODUCT_VIEWED: 1,
+      PRODUCT_CLICKED: 2,
+      PRODUCT_ADDED_TO_CART: 4,
+      PRODUCT_REMOVED_FROM_CART: -2,
+    };
+    const weight = weights[interactionType] ?? 0;
+    if (weight === 0) return values ?? [];
+    return [
+      { productId, weight, interactionType },
+      ...(values ?? []).filter((item) => item.productId !== productId),
+    ].slice(0, MAX_RECENT_ITEMS);
   }
 
   // Chuẩn hóa key Redis để các surface dùng cùng session context và invalidation không bị lệch namespace.

@@ -20,12 +20,28 @@ export class ProfileProjectionRepository {
   constructor(private readonly dataSource: DataSource) {}
 
   // Mở transaction dùng chung cho profile và popularity để mọi tín hiệu được commit/rollback cùng nhau.
-  async transaction<T>(work: (manager: EntityManager) => Promise<T>): Promise<T> {
+  async transaction<T>(
+    work: (manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
     return this.dataSource.transaction(work);
   }
 
+  // Đồng bộ projection session với guest merge bằng cùng advisory lock, tránh event đang chạy bị ghi sau thời điểm merge.
+  async lockSessionMerge(
+    sessionId: string,
+    manager: EntityManager,
+  ): Promise<void> {
+    await manager.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`recommendation-session-merge:${sessionId}`],
+    );
+  }
+
   // Claim event một lần; false nghĩa là Kafka redelivery và caller phải bỏ qua phần cộng điểm.
-  async claimProjectionEvent(eventId: string, manager: EntityManager): Promise<boolean> {
+  async claimProjectionEvent(
+    eventId: string,
+    manager: EntityManager,
+  ): Promise<boolean> {
     const inserted = await manager.query(
       `INSERT INTO recommendation_projection_events (event_id)
        VALUES ($1)
@@ -34,6 +50,19 @@ export class ProfileProjectionRepository {
       [eventId],
     );
     return inserted.length > 0;
+  }
+
+  // Đọc đích merge của session trong cùng transaction để interaction đến trễ vẫn cập nhật đúng user profile.
+  async findMergedUserId(
+    sessionId: string,
+    manager: EntityManager,
+  ): Promise<string | null> {
+    const rows = (await manager.query(
+      `SELECT merged_user_id FROM recommendation_actor_profiles
+       WHERE actor_type = 'SESSION' AND actor_id = $1 AND merged_user_id IS NOT NULL`,
+      [sessionId],
+    )) as Array<{ merged_user_id: string | null }>;
+    return rows[0]?.merged_user_id ?? null;
   }
 
   // Upsert actor profile và chỉ nhận lastInteractionAt mới hơn để event đến trễ không lùi trạng thái profile.
@@ -55,7 +84,10 @@ export class ProfileProjectionRepository {
   }
 
   // Cộng điểm preference theo unique dimension key và giữ nguyên mốc tín hiệu mới nhất.
-  async upsertPreference(input: PreferenceUpsertInput, manager: EntityManager): Promise<void> {
+  async upsertPreference(
+    input: PreferenceUpsertInput,
+    manager: EntityManager,
+  ): Promise<void> {
     await manager.query(
       `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
        VALUES ($1, $2, $3, $4, $5, 1, $6)

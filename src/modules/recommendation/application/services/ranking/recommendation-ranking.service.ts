@@ -1,14 +1,24 @@
 // Service này owns score, cold-start mix và diversity; query service chỉ điều phối dữ liệu và phân trang response.
 
 import { Injectable } from "@nestjs/common";
-import type { RecommendationCatalogProduct } from "../../../catalog/application/types/catalog-product.type";
-import { RecommendationRuleService } from "../../../profiles/application/services/rules/recommendation-rule.service";
-import type { PreferenceValue, SessionContext } from "../../../profiles/application/types/profile.types";
-import type { RecommendationStrategy } from "../types/recommendation.types";
+import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
+import { RecommendationRuleService } from "../../../../profiles/application/services/rules/recommendation-rule.service";
+import type {
+  PreferenceValue,
+  SessionContext,
+} from "../../../../profiles/application/types/profile.types";
+import type { RecommendationStrategy } from "../../types/recommendation.types";
 
 export type RecommendationCandidate = {
   product: RecommendationCatalogProduct;
   sources: Set<string>;
+  contributions?: Array<{
+    source: string;
+    rawScore: number;
+    reasonCode: string;
+    anchorProductId?: string;
+    modelVersion?: string;
+  }>;
 };
 
 type RankedCandidate = RecommendationCandidate & { score: number };
@@ -34,13 +44,16 @@ export class RecommendationRankingService {
     strategy: RecommendationStrategy,
   ): RankedCandidate[] {
     const ranked = candidates
-      .map((candidate) => this.scoreCandidate(candidate, products, categories, brands, context))
+      .map((candidate) =>
+        this.scoreCandidate(candidate, products, categories, brands, context),
+      )
       .sort(
         (left, right) =>
           right.score - left.score ||
           left.product.productId.localeCompare(right.product.productId),
       );
-    const strategyRanked = strategy === "COLD_START" ? this.applyColdStartMix(ranked) : ranked;
+    const strategyRanked =
+      strategy === "COLD_START" ? this.applyColdStartMix(ranked) : ranked;
     return this.applyDiversity(strategyRanked).slice(0, RESULT_SET_LIMIT);
   }
 
@@ -53,37 +66,52 @@ export class RecommendationRankingService {
     context: SessionContext | null,
   ): RankedCandidate {
     const productScore = this.decayedScore(
-      products.find((item) => item.dimensionKey === candidate.product.productId),
+      products.find(
+        (item) => item.dimensionKey === candidate.product.productId,
+      ),
     );
     const categoryScore = this.decayedScore(
-      categories.find((item) => item.dimensionKey === candidate.product.categoryId),
+      categories.find(
+        (item) => item.dimensionKey === candidate.product.categoryId,
+      ),
     );
     const brandScore = this.decayedScore(
       brands.find((item) => item.dimensionKey === candidate.product.brandId),
     );
     const contextScore =
-      (candidate.product.categoryId && context?.recentCategoryIds.includes(candidate.product.categoryId)
+      (candidate.product.categoryId &&
+      context?.recentCategoryIds.includes(candidate.product.categoryId)
         ? 0.7
         : 0) +
-      (candidate.product.brandId && context?.recentBrandIds.includes(candidate.product.brandId) ? 0.3 : 0);
-    const popularity = Math.min(1, Math.log1p(candidate.product.totalSold) / 12);
+      (candidate.product.brandId &&
+      context?.recentBrandIds.includes(candidate.product.brandId)
+        ? 0.3
+        : 0);
+    const popularity = Math.min(
+      1,
+      Math.log1p(candidate.product.totalSold) / 12,
+    );
     const rating = Math.min(1, Number(candidate.product.ratingAvg ?? 0) / 5);
     const freshness = Math.max(
       0,
-      1 - (Date.now() - candidate.product.createdAt.getTime()) / (1000 * 60 * 60 * 24 * 365),
+      1 -
+        (Date.now() - candidate.product.createdAt.getTime()) /
+          (1000 * 60 * 60 * 24 * 365),
     );
     const exploration =
       (candidate.sources.has("NEWEST") || candidate.sources.has("EXPLORE")) &&
       !candidate.sources.has("PRODUCT_AFFINITY")
         ? 1
         : 0;
+    const weights = this.rules.getRankingWeights();
     const score =
-      0.35 * Math.min(1, productScore / 8) +
-      0.2 * Math.min(1, (categoryScore + brandScore + contextScore) / 4) +
-      0.15 * popularity +
-      0.1 * freshness +
-      0.1 * rating +
-      0.1 * exploration;
+      weights.profileAffinity * Math.min(1, productScore / 8) +
+      weights.sessionContext *
+        Math.min(1, (categoryScore + brandScore + contextScore) / 4) +
+      weights.popularity * popularity +
+      weights.freshness * freshness +
+      weights.quality * rating +
+      weights.exploration * exploration;
     return { ...candidate, score };
   }
 
@@ -94,7 +122,9 @@ export class RecommendationRankingService {
       0,
       (Date.now() - value.lastSignalAt.getTime()) / (1000 * 60 * 60 * 24),
     );
-    return value.score * Math.pow(0.5, ageDays / this.rules.getProfileHalfLifeDays());
+    return (
+      value.score * Math.pow(0.5, ageDays / this.rules.getProfileHalfLifeDays())
+    );
   }
 
   // Giới hạn category/brand/shop để danh sách đa dạng nhưng vẫn fill đủ khi catalog nhỏ.
@@ -108,7 +138,8 @@ export class RecommendationRankingService {
     for (const item of items) {
       const category = item.product.categoryId ?? "unknown";
       const brand = item.product.brandId ?? "unknown";
-      const shop = item.product.sellerShopId ?? item.product.externalShopId ?? "unknown";
+      const shop =
+        item.product.sellerShopId ?? item.product.externalShopId ?? "unknown";
       if (
         (categories.get(category) ?? 0) >= 4 ||
         (brands.get(brand) ?? 0) >= 3 ||
@@ -155,7 +186,11 @@ export class RecommendationRankingService {
       }
     }
     for (const item of items) {
-      if (output.length >= RESULT_SET_LIMIT || selected.has(item.product.productId)) continue;
+      if (
+        output.length >= RESULT_SET_LIMIT ||
+        selected.has(item.product.productId)
+      )
+        continue;
       selected.add(item.product.productId);
       output.push(item);
     }

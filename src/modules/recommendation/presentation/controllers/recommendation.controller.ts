@@ -9,7 +9,7 @@ import {
   UnauthorizedException,
   Query,
 } from "@nestjs/common";
-import { RecommendationQueryService } from "../../application/services/recommendation-query.service";
+import { RecommendationQueryService } from "../../application/services/query/recommendation-query.service";
 import { RecommendationQueryDto } from "../dto/recommendation-query.dto";
 import { MergeRecommendationSessionDto } from "../dto/merge-recommendation-session.dto";
 import { ProfileQueryService } from "../../../profiles/application/services/profile/profile-query.service";

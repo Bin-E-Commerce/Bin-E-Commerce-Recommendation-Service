@@ -2,30 +2,32 @@
 
 import { Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { CatalogService } from "../../../catalog/application/services/catalog.service";
-import type { RecommendationCatalogProduct } from "../../../catalog/application/types/catalog-product.type";
-import { ProfileQueryService } from "../../../profiles/application/services/profile/profile-query.service";
-import { SessionContextService } from "../../../profiles/application/services/session/session-context.service";
-import { RecommendationRedisService } from "../../../../infrastructure/redis/redis.module";
-import type { RecommendationQueryDto } from "../../presentation/dto/recommendation-query.dto";
+import { ProfileQueryService } from "../../../../profiles/application/services/profile/profile-query.service";
+import { SessionContextService } from "../../../../profiles/application/services/session/session-context.service";
+import { RecommendationRedisService } from "../../../../../infrastructure/redis/redis.module";
+import type { RecommendationQueryDto } from "../../../presentation/dto/recommendation-query.dto";
 import type {
   RecommendationItemResponse,
   RecommendationResponse,
   RecommendationStrategy,
-} from "../types/recommendation.types";
+} from "../../types/recommendation.types";
 import {
   RecommendationRankingService,
   type RecommendationCandidate,
-} from "./recommendation-ranking.service";
+} from "../ranking/recommendation-ranking.service";
+import { CandidateUnionService } from "../candidates/candidate-union.service";
+import { CandidateGenerationService } from "../candidates/candidate-generation.service";
+import type { CandidateSourceResult } from "../candidates/candidate-source";
 
 @Injectable()
 export class RecommendationQueryService {
   constructor(
-    private readonly catalog: CatalogService,
     private readonly profile: ProfileQueryService,
     private readonly session: SessionContextService,
     private readonly redis: RecommendationRedisService,
     private readonly ranking: RecommendationRankingService,
+    private readonly unionFactory: CandidateUnionService,
+    private readonly candidates: CandidateGenerationService,
   ) {}
 
   // Trả recommendation theo actor context, ưu tiên cache versioned rồi mới dựng candidate pool để backend kiểm soát pagination.
@@ -36,17 +38,29 @@ export class RecommendationQueryService {
   ): Promise<RecommendationResponse> {
     const actorType = userId ? "user" : "session";
     const actorId = userId ?? sessionId ?? "anonymous";
-    const pageSize = input.surface === "product_detail" ? Math.min(input.pageSize, 6) : input.pageSize;
+    const pageSize =
+      input.surface === "product_detail"
+        ? Math.min(input.pageSize, 6)
+        : input.pageSize;
     const [globalVersion, actorVersion] = await Promise.all([
       this.redis.getVersion("recommendation:cache-version:global"),
-      this.redis.getVersion(`recommendation:cache-version:${actorType}:${actorId}`),
+      this.redis.getVersion(
+        `recommendation:cache-version:${actorType}:${actorId}`,
+      ),
     ]);
-    const cacheKey = `recommendation:v${globalVersion}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
+    const ruleVersion = encodeURIComponent(this.ranking.getRuleVersion());
+    const cacheKey = `recommendation:v${globalVersion}:r${ruleVersion}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
     const cached = await this.redis.getJson<RecommendationResponse>(cacheKey);
     if (cached) return cached;
 
     const context = sessionId ? await this.session.get(sessionId) : null;
-    const result = await this.buildResponse(input, userId, sessionId, context, pageSize);
+    const result = await this.buildResponse(
+      input,
+      userId,
+      sessionId,
+      context,
+      pageSize,
+    );
     await this.redis.setJson(cacheKey, result, 300);
     return result;
   }
@@ -61,12 +75,15 @@ export class RecommendationQueryService {
   ): Promise<RecommendationResponse> {
     const actorType = userId ? "USER" : "SESSION";
     const actorId = userId ?? sessionId ?? "anonymous";
-    const [productPreferences, categoryPreferences, brandPreferences] = await Promise.all([
-      this.profile.getTop(actorType, actorId, "PRODUCT", 30),
-      this.profile.getTop(actorType, actorId, "CATEGORY", 12),
-      this.profile.getTop(actorType, actorId, "BRAND", 12),
-    ]);
-    const profileProductIds = productPreferences.map((item) => item.dimensionKey);
+    const [productPreferences, categoryPreferences, brandPreferences] =
+      await Promise.all([
+        this.profile.getTop(actorType, actorId, "PRODUCT", 30),
+        this.profile.getTop(actorType, actorId, "CATEGORY", 12),
+        this.profile.getTop(actorType, actorId, "BRAND", 12),
+      ]);
+    const profileProductIds = productPreferences.map(
+      (item) => item.dimensionKey,
+    );
     const categoryIds = [
       ...new Set([
         ...categoryPreferences.map((item) => item.dimensionKey),
@@ -80,49 +97,35 @@ export class RecommendationQueryService {
       ]),
     ].filter(Boolean);
     const excluded = new Set(
-      [input.productId, ...(context?.recentProductIds ?? []).slice(0, 3)].filter(Boolean) as string[],
+      [
+        input.productId,
+        ...(context?.recentProductIds ?? []).slice(0, 3),
+      ].filter(Boolean) as string[],
     );
 
-    const candidates = new Map<string, RecommendationCandidate>();
-    const add = (items: RecommendationCatalogProduct[], source: string) => {
-      for (const product of items) {
-        if (excluded.has(product.productId)) continue;
-        const current = candidates.get(product.productId);
-        if (current) current.sources.add(source);
-        else candidates.set(product.productId, { product, sources: new Set([source]) });
-      }
-    };
-
-    const [profileProducts, categoryProducts, brandProducts, newest, trending, bestSelling, explore] =
-      await Promise.all([
-        this.catalog.findByIds(profileProductIds),
-        categoryIds.length
-          ? this.catalog.findAvailable({ categoryIds, excludeProductIds: [...excluded], limit: 100 })
-          : Promise.resolve([]),
-        brandIds.length
-          ? this.catalog.findAvailable({ brandIds, excludeProductIds: [...excluded], limit: 80 })
-          : Promise.resolve([]),
-        this.catalog.findNewest(80, [...excluded]),
-        this.catalog.findTrending(80, [...excluded]),
-        this.catalog.findBestSelling(80, [...excluded]),
-        this.catalog.findExplore(60, [...excluded]),
-      ]);
-    add(profileProducts, "PRODUCT_AFFINITY");
-    add(categoryProducts, "CATEGORY_AFFINITY");
-    add(brandProducts, "BRAND_AFFINITY");
-    add(bestSelling, "BEST_SELLING");
-    add(trending, "TRENDING");
-    add(newest, "NEWEST");
-    add(explore, "EXPLORE");
+    const union = this.unionFactory.create([...excluded], 300);
+    const sourceResults = await this.candidates.generate({
+      productId: input.productId,
+      excludedProductIds: [...excluded],
+      profileProductIds,
+      categoryIds,
+      brandIds,
+      recentProductIds: context?.recentProductIds ?? [],
+    });
+    for (const result of sourceResults) this.addSource(union, result);
 
     const strategy: RecommendationStrategy =
-      productPreferences.length || categoryPreferences.length || brandPreferences.length
+      productPreferences.length ||
+      categoryPreferences.length ||
+      brandPreferences.length
         ? "PERSONALIZED"
         : context
           ? "SESSION_BASED"
           : "COLD_START";
+    // Giới hạn candidate union trước ranking để request miss không làm phình CPU/DB khi nhiều source cùng trả dữ liệu.
+    const candidatePool = union.values();
     const diversified = this.ranking.rank(
-      [...candidates.values()],
+      candidatePool,
       productPreferences,
       categoryPreferences,
       brandPreferences,
@@ -142,7 +145,9 @@ export class RecommendationQueryService {
           ? "USER"
           : "NEW_USER"
         : "GUEST",
-      items: pageItems.map((item, index) => this.toResponseItem(item, start + index + 1)),
+      items: pageItems.map((item, index) =>
+        this.toResponseItem(item, start + index + 1),
+      ),
       page: input.page,
       pageSize,
       total,
@@ -150,6 +155,14 @@ export class RecommendationQueryService {
       generatedAt: new Date().toISOString(),
       ruleVersion: this.ranking.getRuleVersion(),
     };
+  }
+
+  // Dua ket qua source vao union tai mot diem duy nhat de query service chi con dieu phoi response/pagination.
+  private addSource(
+    union: ReturnType<CandidateUnionService["create"]>,
+    result: CandidateSourceResult,
+  ): void {
+    union.add(result.products, result.source, result.contributionByProductId);
   }
 
   // Chuyển read model thành product card contract và hiển thị reason theo source mạnh nhất; raw score vẫn giữ cho debug/UI hiện tại.
@@ -165,8 +178,13 @@ export class RecommendationQueryService {
       "BEST_SELLING",
       "NEWEST",
       "EXPLORE",
+      "SEMANTIC_SIMILARITY",
+      "CO_BEHAVIOR",
     ];
-    const source = sourcePriority.find((candidateSource) => item.sources.has(candidateSource)) ?? "EXPLORE";
+    const source =
+      sourcePriority.find((candidateSource) =>
+        item.sources.has(candidateSource),
+      ) ?? "EXPLORE";
     const reasonBySource: Record<string, string> = {
       PRODUCT_AFFINITY: "Dựa trên sản phẩm bạn từng quan tâm",
       CATEGORY_AFFINITY: "Phù hợp với danh mục bạn đang quan tâm",
@@ -175,6 +193,8 @@ export class RecommendationQueryService {
       BEST_SELLING: "Được nhiều khách hàng lựa chọn",
       NEWEST: "Sản phẩm mới đáng để khám phá",
       EXPLORE: "Một lựa chọn mới để bạn khám phá",
+      SEMANTIC_SIMILARITY: "Có nội dung tương đồng với sản phẩm bạn quan tâm",
+      CO_BEHAVIOR: "Được chọn từ hành vi mua sắm tương tự",
     };
     return {
       product: {
@@ -192,12 +212,14 @@ export class RecommendationQueryService {
         ratingAvg: item.product.ratingAvg,
         reviewCount: item.product.reviewCount,
         images: item.product.imageUrl
-          ? [{
-              id: `${item.product.productId}-thumbnail`,
-              imageUrl: item.product.imageUrl,
-              sortOrder: 0,
-              isThumbnail: true,
-            }]
+          ? [
+              {
+                id: `${item.product.productId}-thumbnail`,
+                imageUrl: item.product.imageUrl,
+                sortOrder: 0,
+                isThumbnail: true,
+              },
+            ]
           : [],
         externalShop: null,
         brand: null,

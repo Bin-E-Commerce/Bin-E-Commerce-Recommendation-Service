@@ -1,6 +1,12 @@
 // Module này sở hữu Redis client của Recommendation; Redis chỉ là cache/context và không phải nguồn sự thật của profile.
 
-import { Global, Inject, Injectable, Module, OnModuleDestroy } from "@nestjs/common";
+import {
+  Global,
+  Inject,
+  Injectable,
+  Module,
+  OnModuleDestroy,
+} from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 
@@ -23,11 +29,14 @@ export class RecommendationRedisService implements OnModuleDestroy {
   }
 
   // Ghi JSON với TTL; lỗi Redis chỉ được nuốt ở adapter để không làm hỏng request recommendation.
-  async setJson(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+  async setJson(
+    key: string,
+    value: unknown,
+    ttlSeconds: number,
+  ): Promise<void> {
     try {
       await this.redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
-    } catch {
-    }
+    } catch {}
   }
 
   // Đọc version namespace; khi Redis lỗi trả 0 để request vẫn dùng được cache key mặc định và fallback durable state.
@@ -52,7 +61,12 @@ export class RecommendationRedisService implements OnModuleDestroy {
 
   // Ghi JSON chỉ khi version hiện tại còn khớp để nhiều Kafka event cùng session không ghi đè context của nhau.
   // Lua script gộp đọc version và SET thành một thao tác atomic; Redis lỗi trả false để projection durable vẫn tiếp tục.
-  async compareAndSetJson(key: string, expectedVersion: number, value: unknown, ttlSeconds: number): Promise<boolean> {
+  async compareAndSetJson(
+    key: string,
+    expectedVersion: number,
+    value: unknown,
+    ttlSeconds: number,
+  ): Promise<boolean> {
     try {
       const result = await this.redis.eval(
         `
@@ -91,8 +105,13 @@ export class RecommendationRedisService implements OnModuleDestroy {
   }
 
   // Xóa toàn bộ recommendation cache của một actor bằng scan có cursor để không dùng lệnh KEYS trên production.
-  async invalidateActor(actorType: "user" | "session", actorId: string): Promise<void> {
-    await this.bumpVersion(`recommendation:cache-version:${actorType}:${actorId}`);
+  async invalidateActor(
+    actorType: "user" | "session",
+    actorId: string,
+  ): Promise<void> {
+    await this.bumpVersion(
+      `recommendation:cache-version:${actorType}:${actorId}`,
+    );
   }
 
   // Xóa toàn bộ recommendation result khi catalog hoặc profile thay đổi để page kế tiếp không phục vụ snapshot cũ.
@@ -116,9 +135,9 @@ export class RecommendationRedisService implements OnModuleDestroy {
       useFactory: (config: ConfigService) =>
         new Redis({
           host: config.get<string>("REDIS_HOST", "localhost"),
-          port: config.get<number>("REDIS_PORT", 6379),
+          port: Number(config.get<string>("REDIS_PORT", "6379")),
           password: config.get<string>("REDIS_PASSWORD") || undefined,
-          db: config.get<number>("REDIS_DB", 1),
+          db: Number(config.get<string>("REDIS_DB", "1")),
           lazyConnect: true,
           maxRetriesPerRequest: 1,
           enableOfflineQueue: false,

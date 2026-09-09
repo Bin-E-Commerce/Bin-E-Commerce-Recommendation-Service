@@ -20,7 +20,7 @@ Recommendation Service is the Bin E-Commerce bounded context for collecting beha
 
 ---
 
-> **Current status:** Phase 1 event ingestion is implemented. The service accepts validated interaction events, publishes them to Kafka, consumes them idempotently into PostgreSQL, and routes malformed or exhausted events to a DLQ.
+> **Current status:** Phase 3 foundations are implemented behind feature flags. Catalog semantic snapshots, durable embedding dispatch, AI worker contracts, Qdrant retrieval, and isolated co-behavior projection run alongside the Phase 2 rule ranker.
 
 ## The Problem
 
@@ -227,6 +227,32 @@ Set `CATALOG_BOOTSTRAP=true` and configure `INTERNAL_SERVICE_TOKEN` to import th
 
 Phase 2 intentionally does not include embeddings, Qdrant, collaborative filtering, or ML ranking. Those capabilities can consume the stable profile and catalog contracts in later phases.
 
+## Phase 3 — Catalog Intelligence and Candidate Sources
+
+Phase 3 enriches the recommendation-owned catalog without changing the final Phase 2 ranking formula:
+
+- Product Service emits monotonic `catalogRevision` snapshots with bounded semantic content and a deterministic `contentHash`.
+- Recommendation stores semantic fields and durable `recommendation_embedding_jobs`; a PostgreSQL lease dispatcher publishes requests only after a job is claimed.
+- AI Service runs `embedding-worker` as a separate process and publishes generated vectors using `text-embedding-3-small` by default. Provider failures retry and malformed messages go to the embedding DLQ.
+- Recommendation validates product ID, content hash, model and dimensions before upserting a vector into the Qdrant alias `recommendation_product_embeddings_current`.
+- Semantic similarity and co-view/co-cart/co-purchase sources contribute candidates with source, raw score and anchor metadata. Their failures are fail-soft and Phase 2 sources remain available.
+- Relation projection uses `recommendation-relations-v1`, separate from profile projection, with bounded windows and a projection ledger for idempotency.
+
+Enable candidate sources gradually:
+
+```env
+CANDIDATE_PIPELINE_V3_ENABLED=false
+SEMANTIC_CANDIDATES_ENABLED=false
+CO_BEHAVIOR_CANDIDATES_ENABLED=false
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION_ALIAS=recommendation_product_embeddings_current
+QDRANT_VECTOR_SIZE=1536
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_MODEL_VERSION=text-embedding-3-small
+```
+
+Phase 3 deliberately does not apply semantic/relation scores to ranking. Phase 4 can consume the preserved contributions after offline overlap, coverage, latency and conversion metrics are available.
+
 ## Project Structure
 
 ```text
@@ -298,11 +324,12 @@ npm run test         # Jest
 - Generate candidates from behavior, similar products, categories, and business rules.
 - Return source and reason metadata so the frontend and demo can explain recommendations.
 
-### Phase 3 — Semantic Similarity
+### Phase 3 — Catalog Intelligence and Candidate Generation
 
-- Have AI Service create embeddings from normalized product data.
-- Store vectors in Qdrant and filter by product status, category, and seller policy.
-- Keep vector data outside the Product Service database.
+- Normalize product semantic fields and publish model-versioned embedding jobs.
+- Generate vectors through the isolated AI worker and store them behind a rebuildable Qdrant alias.
+- Project bounded co-view, co-cart, and completed co-purchase relations in a separate consumer group.
+- Union semantic/behavior candidates with Phase 2 sources while preserving attribution and rollback flags.
 
 ### Phase 4 — Ranking, Diversity, and Online Adaptation
 

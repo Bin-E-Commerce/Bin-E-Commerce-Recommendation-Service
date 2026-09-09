@@ -10,6 +10,7 @@ import { InteractionsModule } from "./modules/interactions/interactions.module";
 import { RecommendationRedisModule } from "./infrastructure/redis/redis.module";
 import { RecommendationModule } from "./modules/recommendation/recommendation.module";
 import { CatalogModule } from "./modules/catalog/catalog.module";
+import { RelationsModule } from "./modules/relations/relations.module";
 
 // Khai báo dependency graph của service và kết nối các bounded context vào runtime.
 @Module({
@@ -23,7 +24,7 @@ import { CatalogModule } from "./modules/catalog/catalog.module";
       useFactory: (config: ConfigService) => ({
         type: "postgres" as const,
         host: config.get<string>("POSTGRES_HOST", "localhost"),
-        port: config.get<number>("POSTGRES_PORT", 5432),
+        port: Number(config.get<string>("POSTGRES_PORT", "5432")),
         username: config.get<string>("POSTGRES_USER"),
         password: config.get<string>("POSTGRES_PASSWORD"),
         database: config.get<string>("POSTGRES_DB"),
@@ -43,6 +44,7 @@ import { CatalogModule } from "./modules/catalog/catalog.module";
     RecommendationRedisModule,
     InteractionsModule,
     CatalogModule,
+    RelationsModule,
     RecommendationModule,
     HealthModule,
   ],

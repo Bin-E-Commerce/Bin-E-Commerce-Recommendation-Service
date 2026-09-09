@@ -1,9 +1,9 @@
 // Application service này validate event Kafka rồi lưu interaction; đây là điểm mở rộng cho profile ở Phase 2.
 
 import { Injectable, Logger } from "@nestjs/common";
-import { RecommendationInteractionRepository } from "../../infrastructure/repositories/recommendation-interaction.repository";
-import { validateInteractionEvent } from "../utils/interaction-event.validator";
-import { ProfileProjectionService } from "../../../profiles/application/services/profile/profile-projection.service";
+import { RecommendationInteractionRepository } from "../../../infrastructure/repositories/recommendation-interaction.repository";
+import { validateInteractionEvent } from "../../utils/interaction-event.validator";
+import { ProfileProjectionService } from "../../../../profiles/application/services/profile/profile-projection.service";
 
 @Injectable()
 export class InteractionProcessingService {

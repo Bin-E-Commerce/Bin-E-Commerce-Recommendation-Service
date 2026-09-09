@@ -7,7 +7,7 @@ import {
   RECOMMENDATION_INTERACTIONS_DLQ_TOPIC,
 } from "../../config/kafka.constants";
 import { InvalidInteractionEventError } from "../../../modules/interactions/application/errors/invalid-interaction-event.error";
-import { InteractionProcessingService } from "../../../modules/interactions/application/services/interaction-processing.service";
+import { InteractionProcessingService } from "../../../modules/interactions/application/services/processing/interaction-processing.service";
 
 @Injectable()
 export class InteractionMessageProcessor {

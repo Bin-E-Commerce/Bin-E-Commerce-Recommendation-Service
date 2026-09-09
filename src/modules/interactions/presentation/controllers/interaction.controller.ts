@@ -9,7 +9,7 @@ import {
   Req,
 } from "@nestjs/common";
 import type { Request } from "express";
-import { InteractionIngestionService } from "../../application/services/interaction-ingestion.service";
+import { InteractionIngestionService } from "../../application/services/ingestion/interaction-ingestion.service";
 import { RecordInteractionDto } from "../dto/record-interaction.dto";
 
 @Controller("recommendation")

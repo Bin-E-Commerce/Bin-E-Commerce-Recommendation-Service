@@ -7,11 +7,11 @@ import {
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type { Request } from "express";
-import { RecommendationEvents } from "../../../../../../../packages/common/kafka/events/recommendation.events";
-import type { RecommendationInteractionType } from "../../../../../../../packages/common/kafka/events/recommendation.events";
-import { KafkaProducerService } from "../../../../kafka/producers/kafka-producer.service";
-import { RECOMMENDATION_INTERACTIONS_TOPIC } from "../../../../kafka/config/kafka.constants";
-import type { RecordInteractionDto } from "../../presentation/dto/record-interaction.dto";
+import { RecommendationEvents } from "../../../../../../../../packages/common/kafka/events/recommendation.events";
+import type { RecommendationInteractionType } from "../../../../../../../../packages/common/kafka/events/recommendation.events";
+import { KafkaProducerService } from "../../../../../kafka/producers/kafka-producer.service";
+import { RECOMMENDATION_INTERACTIONS_TOPIC } from "../../../../../kafka/config/kafka.constants";
+import type { RecordInteractionDto } from "../../../presentation/dto/record-interaction.dto";
 
 @Injectable()
 export class InteractionIngestionService {

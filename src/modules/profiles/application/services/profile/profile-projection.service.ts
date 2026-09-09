@@ -2,7 +2,7 @@
 
 import { Injectable } from "@nestjs/common";
 import type { EntityManager } from "typeorm";
-import { CatalogService } from "../../../../catalog/application/services/catalog.service";
+import { CatalogService } from "../../../../catalog/application/services/catalog/catalog.service";
 import type { RecommendationActorType } from "../../../../../database/profiles/entities/actor-profile.entity";
 import type { RecommendationPreferenceDimension } from "../../../../../database/profiles/entities/actor-preference.entity";
 import { RecommendationRedisService } from "../../../../../infrastructure/redis/redis.module";

@@ -30,9 +30,13 @@ export class ProfileQueryService {
     userId: string,
     sessionId: string,
   ): Promise<{ merged: boolean }> {
-    const merged = await this.repository.mergeGuestSession(userId, sessionId);
-    await this.sessionContext.invalidate(sessionId);
-    await this.redis.invalidateActor("user", userId);
+    const context = await this.sessionContext.get(sessionId);
+    const merged = await this.repository.mergeGuestSession(userId, sessionId, context ?? undefined);
+    // Chỉ xóa session sau khi transaction durable thành công; nếu chưa merge thì giữ context để retry không mất hành vi.
+    if (merged) {
+      await this.sessionContext.invalidate(sessionId);
+      await this.redis.invalidateActor("user", userId);
+    }
     return { merged };
   }
 }

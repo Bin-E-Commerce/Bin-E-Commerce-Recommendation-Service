@@ -76,8 +76,11 @@ export function validateCatalogEvent(
   const event = requireEnvelope(input, catalogEventNames);
   const data = event.data as Record<string, unknown>;
   requireString(data.productId, "data.productId", 128);
-  requireString(data.name, "data.name", 500);
-  requireString(data.slug, "data.slug", 620);
+  // Delete event chỉ cần identity/version/status; không bắt producer gửi lại snapshot đã bị xóa.
+  if (event.eventName !== "product.catalog.deleted") {
+    requireString(data.name, "data.name", 500);
+    requireString(data.slug, "data.slug", 620);
+  }
   if (data.originType !== "INTERNAL" && data.originType !== "EXTERNAL") {
     throw new InvalidKafkaEventError("data.originType is not supported");
   }
@@ -94,10 +97,15 @@ export function validateCatalogEvent(
     throw new InvalidKafkaEventError("data.isInStock must be boolean");
   }
   const rawRevision = data.catalogRevision ?? data.catalogVersion;
-  const catalogVersion = typeof rawRevision === "number" && Number.isInteger(rawRevision)
-    ? String(rawRevision)
-    : rawRevision;
-  if (typeof catalogVersion !== "string" || !/^\d+$/.test(catalogVersion) || BigInt(catalogVersion) < 1n) {
+  const catalogVersion =
+    typeof rawRevision === "number" && Number.isInteger(rawRevision)
+      ? String(rawRevision)
+      : rawRevision;
+  if (
+    typeof catalogVersion !== "string" ||
+    !/^\d+$/.test(catalogVersion) ||
+    BigInt(catalogVersion) < 1n
+  ) {
     throw new InvalidKafkaEventError(
       "data.catalogVersion must be a positive numeric string",
     );
@@ -116,22 +124,57 @@ export function validateCatalogEvent(
   }
   const semanticContent = data.semanticContent as Record<string, unknown>;
   requireString(semanticContent.title, "data.semanticContent.title", 255);
-  for (const field of ["shortDescription", "description", "brandName", "categoryPath"] as const) {
-    if (semanticContent[field] !== null && semanticContent[field] !== undefined) {
-      requireString(semanticContent[field], `data.semanticContent.${field}`, field === "description" ? 4000 : 1000);
+  for (const field of [
+    "shortDescription",
+    "description",
+    "brandName",
+    "categoryPath",
+  ] as const) {
+    if (
+      semanticContent[field] !== null &&
+      semanticContent[field] !== undefined
+    ) {
+      requireString(
+        semanticContent[field],
+        `data.semanticContent.${field}`,
+        field === "description" ? 4000 : 1000,
+      );
     }
   }
-  requireString(semanticContent.contentHash, "data.semanticContent.contentHash", 128);
-  if (!Array.isArray(semanticContent.attributes) || semanticContent.attributes.length > 50) {
-    throw new InvalidKafkaEventError("data.semanticContent.attributes must contain at most 50 items");
+  requireString(
+    semanticContent.contentHash,
+    "data.semanticContent.contentHash",
+    128,
+  );
+  if (
+    !Array.isArray(semanticContent.attributes) ||
+    semanticContent.attributes.length > 50
+  ) {
+    throw new InvalidKafkaEventError(
+      "data.semanticContent.attributes must contain at most 50 items",
+    );
   }
   for (const [index, attributeValue] of semanticContent.attributes.entries()) {
-    if (!attributeValue || typeof attributeValue !== "object" || Array.isArray(attributeValue)) {
-      throw new InvalidKafkaEventError(`data.semanticContent.attributes[${index}] must be an object`);
+    if (
+      !attributeValue ||
+      typeof attributeValue !== "object" ||
+      Array.isArray(attributeValue)
+    ) {
+      throw new InvalidKafkaEventError(
+        `data.semanticContent.attributes[${index}] must be an object`,
+      );
     }
     const attribute = attributeValue as Record<string, unknown>;
-    requireString(attribute.key, `data.semanticContent.attributes[${index}].key`, 128);
-    requireString(attribute.value, `data.semanticContent.attributes[${index}].value`, 500);
+    requireString(
+      attribute.key,
+      `data.semanticContent.attributes[${index}].key`,
+      128,
+    );
+    requireString(
+      attribute.value,
+      `data.semanticContent.attributes[${index}].value`,
+      500,
+    );
   }
   data.catalogRevision = catalogVersion;
   data.catalogVersion = catalogVersion;

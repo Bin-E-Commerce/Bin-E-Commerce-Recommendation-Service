@@ -32,16 +32,27 @@ export class EmbeddingJobRepository {
        ON CONFLICT (product_id, content_hash, embedding_profile) DO UPDATE
        SET text_content = EXCLUDED.text_content,
            model_version = EXCLUDED.model_version,
-           status = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED') THEN 'PENDING' ELSE recommendation_embedding_jobs.status END,
-           available_at = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED') THEN now() ELSE recommendation_embedding_jobs.available_at END,
+           status = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED', 'DISPATCHED', 'COMPLETED') OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version THEN 'PENDING' ELSE recommendation_embedding_jobs.status END,
+           available_at = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED', 'DISPATCHED', 'COMPLETED') OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version THEN now() ELSE recommendation_embedding_jobs.available_at END,
            updated_at = now()`,
-      [input.productId, input.contentHash, input.embeddingProfile, input.modelVersion, input.textContent],
+      [
+        input.productId,
+        input.contentHash,
+        input.embeddingProfile,
+        input.modelVersion,
+        input.textContent,
+      ],
     );
   }
 
   // Lease một batch bằng SKIP LOCKED để nhiều Recommendation instance không dispatch trùng job.
-  async leaseBatch(limit: number, leaseSeconds: number): Promise<RecommendationEmbeddingJobEntity[]> {
-    await this.repository.query(`UPDATE recommendation_embedding_jobs SET status = 'PENDING', leased_until = NULL, updated_at = now() WHERE status = 'PROCESSING' AND leased_until < now()`);
+  async leaseBatch(
+    limit: number,
+    leaseSeconds: number,
+  ): Promise<RecommendationEmbeddingJobEntity[]> {
+    await this.repository.query(
+      `UPDATE recommendation_embedding_jobs SET status = 'PENDING', leased_until = NULL, updated_at = now() WHERE status = 'PROCESSING' AND leased_until < now()`,
+    );
     return this.repository.query(
       `WITH claimed AS (
          SELECT job_id FROM recommendation_embedding_jobs
@@ -60,22 +71,36 @@ export class EmbeddingJobRepository {
 
   // Chỉ đánh dấu dispatched sau khi Kafka producer xác nhận publish thành công.
   async markDispatched(jobId: string): Promise<void> {
-    await this.repository.update({ jobId, status: "PROCESSING" }, { status: "DISPATCHED", leasedUntil: null });
+    await this.repository.update(
+      { jobId, status: "PROCESSING" },
+      { status: "DISPATCHED", leasedUntil: null },
+    );
   }
 
   // Trả job về pending với exponential backoff bounded khi Kafka tạm thời unavailable.
-  async markRetry(jobId: string, errorCode: string, delaySeconds: number): Promise<void> {
+  async markRetry(
+    jobId: string,
+    errorCode: string,
+    delaySeconds: number,
+  ): Promise<void> {
     await this.repository.query(
       `UPDATE recommendation_embedding_jobs
        SET status = 'PENDING', leased_until = NULL, available_at = now() + ($2 * interval '1 second'),
            last_error_code = $3, last_error_at = now(), updated_at = now()
        WHERE job_id = $1 AND status = 'PROCESSING'`,
-      [jobId, Math.min(Math.max(delaySeconds, 1), 3600), errorCode.slice(0, 128)],
+      [
+        jobId,
+        Math.min(Math.max(delaySeconds, 1), 3600),
+        errorCode.slice(0, 128),
+      ],
     );
   }
 
   // Đánh dấu completion sau khi Qdrant upsert thành công, phục vụ audit/coverage và replay an toàn.
   async markCompleted(jobId: string): Promise<void> {
-    await this.repository.update({ jobId }, { status: "DISPATCHED", completedAt: new Date(), leasedUntil: null });
+    await this.repository.update(
+      { jobId },
+      { status: "COMPLETED", completedAt: new Date(), leasedUntil: null },
+    );
   }
 }

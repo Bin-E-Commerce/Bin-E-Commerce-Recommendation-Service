@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { KafkaProducerService } from "../../../../../kafka/producers/kafka-producer.service";
 import { RECOMMENDATION_EMBEDDING_REQUESTED_TOPIC } from "../../../../../kafka/config/kafka.constants";
@@ -19,18 +24,31 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   // Tạo hoặc réact một job theo content hash; caller đã commit catalog snapshot trước khi gọi hàm này.
-  async enqueueProduct(input: { productId: string; contentHash: string; textContent: string }): Promise<void> {
+  async enqueueProduct(input: {
+    productId: string;
+    contentHash: string;
+    textContent: string;
+  }): Promise<void> {
     await this.jobs.enqueue({
       ...input,
       embeddingProfile: "product-content-v1",
-      modelVersion: this.config.get<string>("EMBEDDING_MODEL_VERSION", this.config.get<string>("EMBEDDING_MODEL", "text-embedding-3-small")),
+      modelVersion: this.config.get<string>(
+        "EMBEDDING_MODEL_VERSION",
+        this.config.get<string>("EMBEDDING_MODEL", "text-embedding-3-small"),
+      ),
     });
   }
 
   // Poll nhẹ sau bootstrap; dispatcher lỗi không làm HTTP serving process chết.
   onModuleInit(): void {
-    if (this.config.get<string>("EMBEDDING_DISPATCHER_ENABLED", "true") !== "true") return;
-    this.timer = setInterval(() => void this.dispatch(), Number(this.config.get<string>("EMBEDDING_DISPATCH_INTERVAL_MS", "1000")));
+    if (
+      this.config.get<string>("EMBEDDING_DISPATCHER_ENABLED", "true") !== "true"
+    )
+      return;
+    this.timer = setInterval(
+      () => void this.dispatch(),
+      Number(this.config.get<string>("EMBEDDING_DISPATCH_INTERVAL_MS", "1000")),
+    );
     void this.dispatch();
   }
 
@@ -65,14 +83,24 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
               text: job.textContent,
             },
           };
-          await this.producer.publish(RECOMMENDATION_EMBEDDING_REQUESTED_TOPIC, job.productId, event);
+          await this.producer.publish(
+            RECOMMENDATION_EMBEDDING_REQUESTED_TOPIC,
+            job.productId,
+            event,
+          );
           await this.jobs.markDispatched(job.jobId);
         } catch (error) {
-          await this.jobs.markRetry(job.jobId, error instanceof Error ? error.name : "PUBLISH_FAILED", Math.pow(2, Math.min(job.attemptCount, 8)));
+          await this.jobs.markRetry(
+            job.jobId,
+            error instanceof Error ? error.name : "PUBLISH_FAILED",
+            Math.pow(2, Math.min(job.attemptCount, 8)),
+          );
         }
       }
     } catch (error) {
-      this.logger.warn(`Embedding dispatcher deferred: ${error instanceof Error ? error.message : "unknown"}`);
+      this.logger.warn(
+        `Embedding dispatcher deferred: ${error instanceof Error ? error.message : "unknown"}`,
+      );
     } finally {
       this.running = false;
     }

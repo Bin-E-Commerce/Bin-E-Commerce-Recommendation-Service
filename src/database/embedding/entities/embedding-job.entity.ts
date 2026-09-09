@@ -24,7 +24,7 @@ export class RecommendationEmbeddingJobEntity {
   textContent!: string;
 
   @Column({ name: "status", type: "varchar", length: 16, default: "PENDING" })
-  status!: "PENDING" | "PROCESSING" | "DISPATCHED" | "SUPERSEDED" | "FAILED";
+  status!: "PENDING" | "PROCESSING" | "DISPATCHED" | "COMPLETED" | "SUPERSEDED" | "FAILED";
 
   @Column({ name: "attempt_count", type: "integer", default: 0 })
   attemptCount!: number;

@@ -1,3 +1,4 @@
+/// <reference types="jest" />
 import { SemanticContentService } from "./semantic-content.service";
 
 describe("SemanticContentService", () => {
@@ -20,7 +21,10 @@ describe("SemanticContentService", () => {
         description: "A detailed description",
         brandName: "Bin",
         categoryPath: "Camera > Action",
-        attributes: [{ key: "lens", value: "Wide" }, { key: "color", value: "Black" }],
+        attributes: [
+          { key: "lens", value: "Wide" },
+          { key: "color", value: "Black" },
+        ],
         contentHash: "",
       };
       const second = { ...first, attributes: [...first.attributes].reverse() };

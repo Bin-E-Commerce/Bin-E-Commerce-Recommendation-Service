@@ -73,8 +73,10 @@ export class RecommendationRedisService implements OnModuleDestroy {
           local raw = redis.call("GET", KEYS[1])
           local currentVersion = 0
           if raw then
-            local decoded = cjson.decode(raw)
-            currentVersion = tonumber(decoded.version or 0) or 0
+            local ok, decoded = pcall(cjson.decode, raw)
+            if ok and decoded then
+              currentVersion = tonumber(decoded.version or 0) or 0
+            end
           end
           if currentVersion ~= tonumber(ARGV[1]) then
             return 0

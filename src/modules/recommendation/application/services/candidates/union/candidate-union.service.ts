@@ -1,14 +1,11 @@
-import { Injectable } from "@nestjs/common";
-import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
-import type { RecommendationCandidate } from "../ranking/recommendation-ranking.service";
+// File này hợp nhất candidate từ nhiều source theo request; không sở hữu catalog persistence hoặc ranking policy.
 
-export interface CandidateContribution {
-  source: string;
-  rawScore: number;
-  reasonCode: string;
-  anchorProductId?: string;
-  modelVersion?: string;
-}
+import { Injectable } from "@nestjs/common";
+import type { RecommendationCatalogProduct } from "../../../../../catalog/application/types/catalog-product.type";
+import type { CandidateContributionInput } from "../../../types/candidates/candidate-source.types";
+import type { RecommendationCandidate } from "../../../types/ranking/ranking.types";
+
+type CandidateContribution = CandidateContributionInput & { source: string };
 
 // Collector request-scoped cho candidate union; deduplicate product nhưng bảo toàn attribution của mọi source.
 export class CandidateUnion {
@@ -65,8 +62,10 @@ export class CandidateUnion {
         bySource.set(source, sourceCandidates);
       }
     }
-    for (const candidates of bySource.values())
-      candidates.sort(this.compareCandidates);
+    for (const [source, candidates] of bySource)
+      candidates.sort((left, right) =>
+        this.compareSourceCandidates(left, right, source),
+      );
 
     const selected = new Set<string>();
     const cursors = new Map<string, number>();
@@ -111,6 +110,29 @@ export class CandidateUnion {
       right.sources.size - left.sources.size ||
       left.product.productId.localeCompare(right.product.productId)
     );
+  }
+
+  // Khi pool vượt giới hạn, ưu tiên candidate có raw score cao trong chính source trước khi xét coverage.
+  private compareSourceCandidates(
+    left: RecommendationCandidate,
+    right: RecommendationCandidate,
+    source: string,
+  ): number {
+    return (
+      this.sourceScore(right, source) - this.sourceScore(left, source) ||
+      this.compareCandidates(left, right)
+    );
+  }
+
+  // Catalog source có raw score cố định 1; semantic/relation giữ score thực để không bị cắt sai khi union.
+  private sourceScore(
+    candidate: RecommendationCandidate,
+    source: string,
+  ): number {
+    const scores = (candidate.contributions ?? [])
+      .filter((item) => item.source === source)
+      .map((item) => (Number.isFinite(item.rawScore) ? item.rawScore : 0));
+    return scores.length ? Math.max(...scores, 0) : 0;
   }
 }
 

@@ -1,6 +1,8 @@
+// File này tạo semantic candidates từ vector index; không gọi AI provider trong request và không thay đổi final ranking.
+
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { VectorIndexService } from "../../../../catalog/application/services/vector/vector-index.service";
+import { VectorIndexService } from "../../../../../catalog/application/services/vector/vector-index.service";
 
 // Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để Phase 2 ranking/fallback tiếp tục hoạt động.
 @Injectable()

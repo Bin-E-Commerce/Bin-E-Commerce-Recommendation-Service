@@ -35,6 +35,7 @@ export interface RecommendationProductResponse {
 
 export interface RecommendationItemResponse {
   product: RecommendationProductResponse;
+  recommendationItemId: string;
   rank: number;
   score: number;
   source: string;
@@ -52,4 +53,9 @@ export interface RecommendationResponse {
   totalPages: number;
   generatedAt: string;
   ruleVersion: string;
+  rankingPolicyVersion: string;
+  experiment: {
+    id: string;
+    variant: "CONTROL" | "HYBRID";
+  } | null;
 }

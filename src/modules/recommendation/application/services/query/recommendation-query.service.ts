@@ -11,13 +11,16 @@ import type {
   RecommendationResponse,
   RecommendationStrategy,
 } from "../../types/recommendation.types";
-import {
-  RecommendationRankingService,
-  type RecommendationCandidate,
-} from "../ranking/recommendation-ranking.service";
-import { CandidateUnionService } from "../candidates/candidate-union.service";
-import { CandidateGenerationService } from "../candidates/candidate-generation.service";
-import type { CandidateSourceResult } from "../candidates/candidate-source";
+import { RecommendationRankingService } from "../ranking/policy/recommendation-ranking.service";
+import type {
+  RecommendationCandidate,
+  RankingMode,
+} from "../../types/ranking/ranking.types";
+import { CandidateUnionService } from "../candidates/union/candidate-union.service";
+import { CandidateGenerationService } from "../candidates/generation/candidate-generation.service";
+import type { CandidateSourceResult } from "../../types/candidates/candidate-source.types";
+import { RankingExperimentService } from "../ranking/experiments/ranking-experiment.service";
+import { RecommendationTrackingTokenService } from "../tracking/attribution/recommendation-tracking-token.service";
 
 @Injectable()
 export class RecommendationQueryService {
@@ -28,6 +31,8 @@ export class RecommendationQueryService {
     private readonly ranking: RecommendationRankingService,
     private readonly unionFactory: CandidateUnionService,
     private readonly candidates: CandidateGenerationService,
+    private readonly experiment: RankingExperimentService,
+    private readonly trackingToken: RecommendationTrackingTokenService,
   ) {}
 
   // Trả recommendation theo actor context, ưu tiên cache versioned rồi mới dựng candidate pool để backend kiểm soát pagination.
@@ -42,16 +47,30 @@ export class RecommendationQueryService {
       input.surface === "product_detail"
         ? Math.min(input.pageSize, 6)
         : input.pageSize;
+    const assignment = this.experiment.resolve(
+      userId ? "USER" : "SESSION",
+      actorId,
+    );
+    const mode: RankingMode =
+      assignment.variant === "HYBRID" && this.ranking.isHybridRankingEnabled()
+        ? "HYBRID"
+        : "CONTROL";
+    // Metadata phải phản ánh đúng strategy thực tế; không được ghi HYBRID khi feature flag đang tắt.
+    const experiment = assignment.id
+      ? { ...assignment, variant: mode }
+      : assignment;
+    const policyVersion = this.ranking.getPolicyVersion(mode);
     const [globalVersion, actorVersion] = await Promise.all([
       this.redis.getVersion("recommendation:cache-version:global"),
       this.redis.getVersion(
         `recommendation:cache-version:${actorType}:${actorId}`,
       ),
     ]);
-    const ruleVersion = encodeURIComponent(this.ranking.getRuleVersion());
-    const cacheKey = `recommendation:v${globalVersion}:r${ruleVersion}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
+    const ruleVersion = encodeURIComponent(policyVersion);
+    const cacheKey = `recommendation:contract-v4:v${globalVersion}:r${ruleVersion}:e${experiment.id ?? "none"}:${experiment.variant}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
     const cached = await this.redis.getJson<RecommendationResponse>(cacheKey);
-    if (cached) return cached;
+    if (cached)
+      return this.refreshCachedResponse(cached, actorId, input.surface, mode);
 
     const context = sessionId ? await this.session.get(sessionId) : null;
     const result = await this.buildResponse(
@@ -60,9 +79,41 @@ export class RecommendationQueryService {
       sessionId,
       context,
       pageSize,
+      mode,
+      experiment,
     );
     await this.redis.setJson(cacheKey, result, 300);
     return result;
+  }
+
+  // Tạo request/token mới cho mỗi HTTP response để cache hit không làm gộp impression của nhiều lần serving vào một requestId.
+  private refreshCachedResponse(
+    cached: RecommendationResponse,
+    actorId: string,
+    surface: RecommendationQueryDto["surface"],
+    mode: RankingMode,
+  ): RecommendationResponse {
+    const requestId = randomUUID();
+    return {
+      ...cached,
+      requestId,
+      generatedAt: new Date().toISOString(),
+      items: cached.items.map((item) => ({
+        ...item,
+        recommendationItemId: this.trackingToken.create({
+          actorId,
+          requestId,
+          productId: item.product.id,
+          rank: item.rank,
+          source: item.source,
+          surface,
+          policyVersion:
+            cached.rankingPolicyVersion ?? this.ranking.getPolicyVersion(mode),
+          experimentId: cached.experiment?.id ?? null,
+          experimentVariant: cached.experiment?.variant ?? null,
+        }),
+      })),
+    };
   }
 
   // Gom source candidate bằng các query song song; duplicate product chỉ giữ một read model và hợp nhất source để explainability.
@@ -72,6 +123,8 @@ export class RecommendationQueryService {
     sessionId: string | null,
     context: Awaited<ReturnType<SessionContextService["get"]>>,
     pageSize: number,
+    mode: RankingMode,
+    experiment: ReturnType<RankingExperimentService["resolve"]>,
   ): Promise<RecommendationResponse> {
     const actorType = userId ? "USER" : "SESSION";
     const actorId = userId ?? sessionId ?? "anonymous";
@@ -81,18 +134,22 @@ export class RecommendationQueryService {
         this.profile.getTop(actorType, actorId, "CATEGORY", 12),
         this.profile.getTop(actorType, actorId, "BRAND", 12),
       ]);
-    const profileProductIds = productPreferences.map(
-      (item) => item.dimensionKey,
-    );
+    const profileProductIds = productPreferences
+      .filter((item) => item.score > 0)
+      .map((item) => item.dimensionKey);
     const categoryIds = [
       ...new Set([
-        ...categoryPreferences.map((item) => item.dimensionKey),
+        ...categoryPreferences
+          .filter((item) => item.score > 0)
+          .map((item) => item.dimensionKey),
         ...(context?.recentCategoryIds ?? []),
       ]),
     ].filter(Boolean);
     const brandIds = [
       ...new Set([
-        ...brandPreferences.map((item) => item.dimensionKey),
+        ...brandPreferences
+          .filter((item) => item.score > 0)
+          .map((item) => item.dimensionKey),
         ...(context?.recentBrandIds ?? []),
       ]),
     ].filter(Boolean);
@@ -102,6 +159,14 @@ export class RecommendationQueryService {
         ...(context?.recentProductIds ?? []).slice(0, 3),
       ].filter(Boolean) as string[],
     );
+    const strategy: RecommendationStrategy =
+      productPreferences.some((item) => item.score > 0) ||
+      categoryPreferences.some((item) => item.score > 0) ||
+      brandPreferences.some((item) => item.score > 0)
+        ? "PERSONALIZED"
+        : context
+          ? "SESSION_BASED"
+          : "COLD_START";
 
     const union = this.unionFactory.create([...excluded], 300);
     const sourceResults = await this.candidates.generate({
@@ -111,17 +176,11 @@ export class RecommendationQueryService {
       categoryIds,
       brandIds,
       recentProductIds: context?.recentProductIds ?? [],
+      recentProductSignals: context?.recentProductSignals ?? [],
+      strategy,
     });
     for (const result of sourceResults) this.addSource(union, result);
 
-    const strategy: RecommendationStrategy =
-      productPreferences.length ||
-      categoryPreferences.length ||
-      brandPreferences.length
-        ? "PERSONALIZED"
-        : context
-          ? "SESSION_BASED"
-          : "COLD_START";
     // Giới hạn candidate union trước ranking để request miss không làm phình CPU/DB khi nhiều source cùng trả dữ liệu.
     const candidatePool = union.values();
     const diversified = this.ranking.rank(
@@ -131,6 +190,7 @@ export class RecommendationQueryService {
       brandPreferences,
       context,
       strategy,
+      { mode, surface: input.surface },
     );
     const total = diversified.length;
     const start = (input.page - 1) * pageSize;
@@ -146,14 +206,26 @@ export class RecommendationQueryService {
           : "NEW_USER"
         : "GUEST",
       items: pageItems.map((item, index) =>
-        this.toResponseItem(item, start + index + 1),
+        this.toResponseItem(
+          item,
+          start + index + 1,
+          requestId,
+          actorId,
+          input.surface,
+          mode,
+          experiment,
+        ),
       ),
       page: input.page,
       pageSize,
       total,
-      totalPages: Math.ceil(total / pageSize),
+      totalPages: total === 0 ? 1 : Math.ceil(total / pageSize),
       generatedAt: new Date().toISOString(),
       ruleVersion: this.ranking.getRuleVersion(),
+      rankingPolicyVersion: this.ranking.getPolicyVersion(mode),
+      experiment: experiment.id
+        ? { id: experiment.id, variant: experiment.variant }
+        : null,
     };
   }
 
@@ -169,17 +241,22 @@ export class RecommendationQueryService {
   private toResponseItem(
     item: RecommendationCandidate & { score: number },
     rank: number,
+    requestId: string,
+    actorId: string,
+    surface: RecommendationQueryDto["surface"],
+    mode: RankingMode,
+    experiment: ReturnType<RankingExperimentService["resolve"]>,
   ): RecommendationItemResponse {
     const sourcePriority = [
       "PRODUCT_AFFINITY",
       "CATEGORY_AFFINITY",
       "BRAND_AFFINITY",
+      "CO_BEHAVIOR",
+      "SEMANTIC_SIMILARITY",
       "TRENDING",
       "BEST_SELLING",
       "NEWEST",
       "EXPLORE",
-      "SEMANTIC_SIMILARITY",
-      "CO_BEHAVIOR",
     ];
     const source =
       sourcePriority.find((candidateSource) =>
@@ -224,6 +301,17 @@ export class RecommendationQueryService {
         externalShop: null,
         brand: null,
       },
+      recommendationItemId: this.trackingToken.create({
+        actorId,
+        requestId,
+        productId: item.product.productId,
+        rank,
+        source,
+        surface,
+        policyVersion: this.ranking.getPolicyVersion(mode),
+        experimentId: experiment.id,
+        experimentVariant: experiment.id ? experiment.variant : null,
+      }),
       rank,
       score: Number(item.score.toFixed(6)),
       source,

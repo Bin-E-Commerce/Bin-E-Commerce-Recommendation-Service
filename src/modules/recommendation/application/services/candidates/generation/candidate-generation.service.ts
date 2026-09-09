@@ -1,12 +1,14 @@
+// File này điều phối các nguồn candidate của Recommendation bounded context; không xếp hạng và không đọc database service khác trực tiếp.
+
 import { Injectable, Logger } from "@nestjs/common";
-import { CatalogService } from "../../../../catalog/application/services/catalog/catalog.service";
-import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
-import { RelationCandidateService } from "../../../../relations/application/services/candidates/relation-candidate.service";
-import { SemanticCandidateService } from "./semantic-candidate.service";
+import { CatalogService } from "../../../../../catalog/application/services/catalog/catalog.service";
+import type { RecommendationCatalogProduct } from "../../../../../catalog/application/types/catalog-product.type";
+import { RelationCandidateService } from "../../../../../relations/application/services/candidates/relation-candidate.service";
+import { SemanticCandidateService } from "../sources/semantic-candidate.service";
 import type {
   CandidateSourceInput,
   CandidateSourceResult,
-} from "./candidate-source";
+} from "../../../types/candidates/candidate-source.types";
 
 // Dieu phoi cac candidate source doc lap; loi mot source khong duoc lam hong recommendation pipeline.
 @Injectable()
@@ -63,36 +65,43 @@ export class CandidateGenerationService {
           ),
       },
       {
-        source: "BEST_SELLING",
-        run: () =>
-          this.fromCatalog("BEST_SELLING", "BEST_SELLING", () =>
-            this.catalog.findBestSelling(80, input.excludedProductIds),
-          ),
-      },
-      {
         source: "TRENDING",
         run: () =>
           this.fromCatalog("TRENDING", "TRENDING", () =>
             this.catalog.findTrending(80, input.excludedProductIds),
           ),
       },
-      {
-        source: "NEWEST",
-        run: () =>
-          this.fromCatalog("NEWEST", "NEWEST", () =>
-            this.catalog.findNewest(80, input.excludedProductIds),
-          ),
-      },
-      {
-        source: "EXPLORE",
-        run: () =>
-          this.fromCatalog("EXPLORE", "EXPLORE", () =>
-            this.catalog.findExplore(60, input.excludedProductIds),
-          ),
-      },
       { source: "SEMANTIC_SIMILARITY", run: () => this.fromSemantic(input) },
       { source: "CO_BEHAVIOR", run: () => this.fromRelations(input) },
     ];
+    // Personalized/session requests vẫn có trending làm baseline; newest/explore/best-selling chỉ chạy cold-start để giảm query thừa.
+    if (input.strategy === "COLD_START") {
+      tasks.splice(
+        2,
+        0,
+        {
+          source: "BEST_SELLING",
+          run: () =>
+            this.fromCatalog("BEST_SELLING", "BEST_SELLING", () =>
+              this.catalog.findBestSelling(80, input.excludedProductIds),
+            ),
+        },
+        {
+          source: "NEWEST",
+          run: () =>
+            this.fromCatalog("NEWEST", "NEWEST", () =>
+              this.catalog.findNewest(80, input.excludedProductIds),
+            ),
+        },
+        {
+          source: "EXPLORE",
+          run: () =>
+            this.fromCatalog("EXPLORE", "EXPLORE", () =>
+              this.catalog.findExplore(60, input.excludedProductIds),
+            ),
+        },
+      );
+    }
     const settled = await Promise.allSettled(tasks.map((task) => task.run()));
     return settled.flatMap((result, index) => {
       if (result.status === "fulfilled") return [result.value];
@@ -133,6 +142,12 @@ export class CandidateGenerationService {
     const byId = new Map(
       candidates.map((candidate) => [candidate.productId, candidate]),
     );
+    const sourcePosition = new Map(
+      candidates.map((candidate, index) => [
+        candidate.productId,
+        { rank: index + 1, size: candidates.length },
+      ]),
+    );
     const products = await this.catalog.findByIds(
       candidates.map((candidate) => candidate.productId),
     );
@@ -140,8 +155,9 @@ export class CandidateGenerationService {
       source: "SEMANTIC_SIMILARITY",
       products,
       contributionByProductId: new Map(
-        products.map((product) => {
+        products.map((product, index) => {
           const candidate = byId.get(product.productId);
+          const position = sourcePosition.get(product.productId);
           return [
             product.productId,
             {
@@ -149,6 +165,8 @@ export class CandidateGenerationService {
               reasonCode: "SEMANTICALLY_RELATED",
               anchorProductId: candidate?.anchorProductId,
               modelVersion: candidate?.modelVersion,
+              sourceRank: position?.rank ?? index + 1,
+              sourceSize: position?.size ?? products.length,
             },
           ];
         }),
@@ -168,24 +186,50 @@ export class CandidateGenerationService {
       input.excludedProductIds,
       100,
     );
+    // Một sản phẩm có thể được nối từ nhiều anchor hoặc nhiều loại quan hệ; giữ đóng góp mạnh nhất để không bị Map ghi đè ngẫu nhiên.
+    const candidatesByProductId = new Map<
+      string,
+      (typeof candidates)[number]
+    >();
+    for (const candidate of candidates) {
+      const current = candidatesByProductId.get(candidate.productId);
+      if (!current || candidate.rawScore > current.rawScore) {
+        candidatesByProductId.set(candidate.productId, candidate);
+      }
+    }
+    const normalizedCandidates = [...candidatesByProductId.values()].sort(
+      (left, right) =>
+        right.rawScore - left.rawScore ||
+        left.productId.localeCompare(right.productId),
+    );
     const byId = new Map(
-      candidates.map((candidate) => [candidate.productId, candidate]),
+      normalizedCandidates.map((candidate) => [candidate.productId, candidate]),
+    );
+    const sourcePosition = new Map(
+      normalizedCandidates.map((candidate, index) => [
+        candidate.productId,
+        { rank: index + 1, size: normalizedCandidates.length },
+      ]),
     );
     const products = await this.catalog.findByIds(
-      candidates.map((candidate) => candidate.productId),
+      normalizedCandidates.map((candidate) => candidate.productId),
     );
     return {
       source: "CO_BEHAVIOR",
       products,
       contributionByProductId: new Map(
-        products.map((product) => {
+        products.map((product, index) => {
           const candidate = byId.get(product.productId);
+          const position = sourcePosition.get(product.productId);
           return [
             product.productId,
             {
               rawScore: candidate?.rawScore ?? 0,
               reasonCode: "CO_BEHAVIOR_RELATED",
               anchorProductId: candidate?.anchorProductId,
+              relationType: candidate?.relationType,
+              sourceRank: position?.rank ?? index + 1,
+              sourceSize: position?.size ?? products.length,
             },
           ];
         }),
@@ -198,9 +242,14 @@ export class CandidateGenerationService {
     reasonCode: string,
   ): Map<string, { rawScore: number; reasonCode: string }> {
     return new Map(
-      products.map((product) => [
+      products.map((product, index) => [
         product.productId,
-        { rawScore: 1, reasonCode },
+        {
+          rawScore: 1,
+          reasonCode,
+          sourceRank: index + 1,
+          sourceSize: products.length,
+        },
       ]),
     );
   }

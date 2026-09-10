@@ -11,6 +11,7 @@ import { RecommendationRedisModule } from "./infrastructure/redis/redis.module";
 import { RecommendationModule } from "./modules/recommendation/recommendation.module";
 import { CatalogModule } from "./modules/catalog/catalog.module";
 import { RelationsModule } from "./modules/relations/relations.module";
+import { MaintenanceModule } from "./modules/maintenance/maintenance.module";
 
 // Khai báo dependency graph của service và kết nối các bounded context vào runtime.
 @Module({
@@ -45,6 +46,7 @@ import { RelationsModule } from "./modules/relations/relations.module";
     InteractionsModule,
     CatalogModule,
     RelationsModule,
+    MaintenanceModule,
     RecommendationModule,
     HealthModule,
   ],

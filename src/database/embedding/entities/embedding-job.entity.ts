@@ -6,6 +6,7 @@ import { Column, Entity, Index, PrimaryGeneratedColumn, Unique } from "typeorm";
 @Index("idx_recommendation_embedding_jobs_ready", ["status", "availableAt"])
 export class RecommendationEmbeddingJobEntity {
   @PrimaryGeneratedColumn("uuid", { name: "job_id" })
+  // Stable job identity được AI worker gửi lại trong generated event để completion có thể đối chiếu.
   jobId!: string;
 
   @Column({ name: "product_id", type: "varchar", length: 128 })
@@ -24,12 +25,14 @@ export class RecommendationEmbeddingJobEntity {
   textContent!: string;
 
   @Column({ name: "status", type: "varchar", length: 16, default: "PENDING" })
+  // DISPATCHED vẫn còn lease chờ generated event; hết lease sẽ được dispatcher đưa về PENDING.
   status!: "PENDING" | "PROCESSING" | "DISPATCHED" | "COMPLETED" | "SUPERSEDED" | "FAILED";
 
   @Column({ name: "attempt_count", type: "integer", default: 0 })
   attemptCount!: number;
 
   @Column({ name: "leased_until", type: "timestamptz", nullable: true })
+  // Thời điểm hết quyền xử lý hiện tại, dùng cho recovery sau crash hoặc timeout acknowledgement.
   leasedUntil!: Date | null;
 
   @Column({ name: "available_at", type: "timestamptz", default: () => "now()" })

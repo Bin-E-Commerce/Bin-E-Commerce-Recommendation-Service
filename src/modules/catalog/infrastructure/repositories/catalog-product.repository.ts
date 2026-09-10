@@ -2,7 +2,7 @@
 
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { EntityManager, In, Repository } from "typeorm";
 import { RecommendationCatalogProductEntity } from "../../../../database/catalog/entities/catalog-product.entity";
 import type {
   CatalogProductListOptions,
@@ -20,15 +20,21 @@ export class CatalogProductRepository {
   // Upsert snapshot theo catalog version để event cũ không ghi đè dữ liệu mới hơn.
   async upsertIfNewer(
     product: Partial<RecommendationCatalogProduct> & { productId: string },
+    manager: EntityManager = this.repository.manager,
   ): Promise<boolean> {
-    const current = await this.repository.findOne({ where: { productId: product.productId } });
+    const current = await manager
+      .getRepository(RecommendationCatalogProductEntity)
+      .findOne({ where: { productId: product.productId } });
     const snapshot = {
       ...current,
       ...product,
       catalogVersion: product.catalogVersion ?? current?.catalogVersion ?? "1",
-      semanticAttributes: product.semanticAttributes ?? current?.semanticAttributes ?? [],
+      semanticAttributes:
+        product.semanticAttributes ?? current?.semanticAttributes ?? [],
     };
-    const rows = await this.repository.query(
+    // Giữ trạng thái vector khi event/bootstrap chỉ lặp lại cùng contentHash;
+    // nếu không, mỗi lần bootstrap sẽ reset READY về PENDING và tạo embedding thừa.
+    const rows = (await manager.query(
       `INSERT INTO recommendation_catalog_products
         (product_id, origin_type, name, slug, image_url, category_id, brand_id, seller_shop_id, external_shop_id,
          min_price, max_price, rating_avg, review_count, total_sold, status, is_in_stock, created_at, updated_at,
@@ -45,28 +51,65 @@ export class CatalogProductRepository {
          short_description = EXCLUDED.short_description, description = EXCLUDED.description,
          brand_name = EXCLUDED.brand_name, category_path = EXCLUDED.category_path,
          semantic_attributes = EXCLUDED.semantic_attributes, content_hash = EXCLUDED.content_hash,
-         embedding_status = EXCLUDED.embedding_status, embedding_model_version = EXCLUDED.embedding_model_version,
-         embedding_dimensions = EXCLUDED.embedding_dimensions
+         embedding_status = CASE
+           WHEN recommendation_catalog_products.content_hash = EXCLUDED.content_hash
+             THEN recommendation_catalog_products.embedding_status
+           ELSE EXCLUDED.embedding_status
+         END,
+         embedding_model_version = CASE
+           WHEN recommendation_catalog_products.content_hash = EXCLUDED.content_hash
+             THEN recommendation_catalog_products.embedding_model_version
+           ELSE EXCLUDED.embedding_model_version
+         END,
+         embedding_dimensions = CASE
+           WHEN recommendation_catalog_products.content_hash = EXCLUDED.content_hash
+             THEN recommendation_catalog_products.embedding_dimensions
+           ELSE EXCLUDED.embedding_dimensions
+         END
        WHERE recommendation_catalog_products.catalog_version <= EXCLUDED.catalog_version
        RETURNING product_id`,
       [
-        snapshot.productId, snapshot.originType, snapshot.name, snapshot.slug, snapshot.imageUrl ?? null,
-        snapshot.categoryId ?? null, snapshot.brandId ?? null, snapshot.sellerShopId ?? null, snapshot.externalShopId ?? null,
-        snapshot.minPrice ?? "0", snapshot.maxPrice ?? snapshot.minPrice ?? "0", snapshot.ratingAvg ?? null,
-        snapshot.reviewCount ?? 0, snapshot.totalSold ?? 0, snapshot.status ?? "INACTIVE", snapshot.isInStock ?? false,
-        snapshot.createdAt ?? new Date(), snapshot.updatedAt ?? new Date(), snapshot.catalogVersion,
-        snapshot.shortDescription ?? null, snapshot.description ?? null, snapshot.brandName ?? null,
-        snapshot.categoryPath ?? null, JSON.stringify(snapshot.semanticAttributes), snapshot.contentHash ?? null,
-        snapshot.embeddingStatus ?? "NOT_REQUIRED", snapshot.embeddingModelVersion ?? null, snapshot.embeddingDimensions ?? null,
+        snapshot.productId,
+        snapshot.originType,
+        snapshot.name,
+        snapshot.slug,
+        snapshot.imageUrl ?? null,
+        snapshot.categoryId ?? null,
+        snapshot.brandId ?? null,
+        snapshot.sellerShopId ?? null,
+        snapshot.externalShopId ?? null,
+        snapshot.minPrice ?? "0",
+        snapshot.maxPrice ?? snapshot.minPrice ?? "0",
+        snapshot.ratingAvg ?? null,
+        snapshot.reviewCount ?? 0,
+        snapshot.totalSold ?? 0,
+        snapshot.status ?? "INACTIVE",
+        snapshot.isInStock ?? false,
+        snapshot.createdAt ?? new Date(),
+        snapshot.updatedAt ?? new Date(),
+        snapshot.catalogVersion,
+        snapshot.shortDescription ?? null,
+        snapshot.description ?? null,
+        snapshot.brandName ?? null,
+        snapshot.categoryPath ?? null,
+        JSON.stringify(snapshot.semanticAttributes),
+        snapshot.contentHash ?? null,
+        snapshot.embeddingStatus ?? "NOT_REQUIRED",
+        snapshot.embeddingModelVersion ?? null,
+        snapshot.embeddingDimensions ?? null,
       ],
-    ) as Array<{ product_id: string }>;
+    )) as Array<{ product_id: string }>;
     return rows.length > 0;
   }
 
   // Cập nhật metadata embedding atomically mà không thay đổi snapshot catalog động.
   async updateEmbeddingState(
     productId: string,
-    input: { status: RecommendationCatalogProductEntity["embeddingStatus"]; modelVersion?: string | null; dimensions?: number | null },
+    input: {
+      status: RecommendationCatalogProductEntity["embeddingStatus"];
+      modelVersion?: string | null;
+      dimensions?: number | null;
+    },
   ): Promise<void> {
     await this.repository.update(
       { productId },
@@ -79,13 +122,28 @@ export class CatalogProductRepository {
   }
 
   // Đọc snapshot hiện tại để completion consumer kiểm tra contentHash/model trước khi ghi vector.
-  async findOne(productId: string): Promise<RecommendationCatalogProductEntity | null> {
+  async findOne(
+    productId: string,
+  ): Promise<RecommendationCatalogProductEntity | null> {
     return this.repository.findOne({ where: { productId } });
   }
 
+  // Đọc snapshot bằng transaction manager để catalog và embedding outbox dùng cùng một commit boundary.
+  async findOneWithManager(
+    productId: string,
+    manager: EntityManager,
+  ): Promise<RecommendationCatalogProductEntity | null> {
+    return manager
+      .getRepository(RecommendationCatalogProductEntity)
+      .findOne({ where: { productId } });
+  }
+
   // Chuyển product thành inactive và hết hàng nhưng vẫn giữ read model để audit/event cũ còn đối chiếu được.
-  async deactivate(productId: string, catalogVersion?: string): Promise<boolean> {
-    const rows = await this.repository.query(
+  async deactivate(
+    productId: string,
+    catalogVersion?: string,
+  ): Promise<boolean> {
+    const rows = (await this.repository.query(
       `UPDATE recommendation_catalog_products
           SET status = 'INACTIVE', is_in_stock = false,
               catalog_version = COALESCE($2, catalog_version), updated_at = now()
@@ -93,7 +151,7 @@ export class CatalogProductRepository {
           AND ($2 IS NULL OR catalog_version <= $2)
         RETURNING product_id`,
       [productId, catalogVersion ?? null],
-    ) as Array<{ product_id: string }>;
+    )) as Array<{ product_id: string }>;
     return rows.length > 0;
   }
 
@@ -133,7 +191,12 @@ export class CatalogProductRepository {
     limit: number,
     excludeProductIds: string[] = [],
   ): Promise<RecommendationCatalogProductEntity[]> {
-    return this.findOrdered("product.created_at", "DESC", limit, excludeProductIds);
+    return this.findOrdered(
+      "product.created_at",
+      "DESC",
+      limit,
+      excludeProductIds,
+    );
   }
 
   // Lấy source best-selling từ total_sold để làm baseline cho user mới hoặc guest.
@@ -141,7 +204,12 @@ export class CatalogProductRepository {
     limit: number,
     excludeProductIds: string[] = [],
   ): Promise<RecommendationCatalogProductEntity[]> {
-    return this.findOrdered("product.total_sold", "DESC", limit, excludeProductIds);
+    return this.findOrdered(
+      "product.total_sold",
+      "DESC",
+      limit,
+      excludeProductIds,
+    );
   }
 
   // Join popularity aggregate để lấy trending mà không đẩy query popularity vào application service.
@@ -183,7 +251,10 @@ export class CatalogProductRepository {
     }
 
     return query
-      .orderBy("COALESCE(popularity.rolling_score, legacy_popularity.popularity_score, 0)", "DESC")
+      .orderBy(
+        "COALESCE(popularity.rolling_score, legacy_popularity.popularity_score, 0)",
+        "DESC",
+      )
       .addOrderBy("product.total_sold", "DESC")
       .addOrderBy("product.product_id", "ASC")
       .limit(Math.min(limit, 200))
@@ -195,11 +266,18 @@ export class CatalogProductRepository {
     limit: number,
     excludeProductIds: string[] = [],
   ): Promise<RecommendationCatalogProductEntity[]> {
-    return this.findOrdered("product.product_id", "ASC", limit, excludeProductIds);
+    return this.findOrdered(
+      "product.product_id",
+      "ASC",
+      limit,
+      excludeProductIds,
+    );
   }
 
   // Lấy product theo affinity IDs và chỉ trả sản phẩm còn đủ điều kiện public/stock.
-  async findByIds(productIds: string[]): Promise<RecommendationCatalogProductEntity[]> {
+  async findByIds(
+    productIds: string[],
+  ): Promise<RecommendationCatalogProductEntity[]> {
     if (productIds.length === 0) return [];
     return this.repository.find({
       where: { productId: In(productIds), status: "ACTIVE", isInStock: true },

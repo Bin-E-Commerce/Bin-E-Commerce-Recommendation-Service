@@ -14,6 +14,7 @@ import {
   RECOMMENDATION_EMBEDDING_DLQ_TOPIC,
   RECOMMENDATION_EMBEDDING_GENERATED_TOPIC,
   RECOMMENDATION_EMBEDDING_GROUP,
+  getNextKafkaOffset,
 } from "../config/kafka.constants";
 import { KafkaProducerService } from "../producers/kafka-producer.service";
 import { SemanticContentService } from "../../modules/catalog/application/services/semantic/semantic-content.service";
@@ -24,6 +25,7 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EmbeddingConsumerService.name);
   private readonly consumer: Consumer;
   private started = false;
+  private stopping = false;
   private restartTimer?: NodeJS.Timeout;
 
   constructor(
@@ -49,10 +51,12 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    this.stopping = false;
     void this.start();
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (this.started) await this.consumer.disconnect();
   }
@@ -108,7 +112,7 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
               { errorCode: "INVALID_EMBEDDING_EVENT", raw: raw.slice(0, 2000) },
             );
             await this.consumer.commitOffsets([
-              { topic, partition, offset: String(Number(message.offset) + 1) },
+              { topic, partition, offset: getNextKafkaOffset(message.offset) },
             ]);
             return;
           }
@@ -133,6 +137,18 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
             event.data.modelVersion === expectedModel &&
             event.data.dimensions === expectedDimensions;
           if (!product || !isCurrentContent || !isCompatible) {
+            // Product đã xóa hoặc completion không còn khớp job hiện tại thì không được để job quay lại queue vô hạn.
+            if (!product || !isCurrentContent) {
+              await this.jobs.markSuperseded({
+                jobId: event.data.jobId,
+                productId: event.data.productId,
+                contentHash: event.data.contentHash,
+                modelVersion: event.data.modelVersion,
+                errorCode: !product
+                  ? "EMBEDDING_PRODUCT_NOT_FOUND"
+                  : "EMBEDDING_CONTENT_STALE",
+              });
+            }
             // Completion cũ không được làm bẩn trạng thái của content mới; chỉ đánh dấu stale khi nó còn trỏ đúng content hiện tại.
             if (product && isCurrentContent) {
               await this.catalog.updateEmbeddingState(product.productId, {
@@ -163,7 +179,7 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
               });
             }
             await this.consumer.commitOffsets([
-              { topic, partition, offset: String(Number(message.offset) + 1) },
+              { topic, partition, offset: getNextKafkaOffset(message.offset) },
             ]);
             return;
           }
@@ -188,9 +204,14 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
             modelVersion: event.data.modelVersion,
             dimensions: event.data.dimensions,
           });
-          await this.jobs.markCompleted(event.data.jobId);
+          await this.jobs.markCompleted({
+            jobId: event.data.jobId,
+            productId: event.data.productId,
+            contentHash: event.data.contentHash,
+            modelVersion: event.data.modelVersion,
+          });
           await this.consumer.commitOffsets([
-            { topic, partition, offset: String(Number(message.offset) + 1) },
+            { topic, partition, offset: getNextKafkaOffset(message.offset) },
           ]);
         },
       });
@@ -200,7 +221,12 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
       );
       if (this.started) await this.consumer.disconnect().catch(() => undefined);
       this.started = false;
-      this.restartTimer = setTimeout(() => void this.start(), 5000);
+      if (!this.stopping) {
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = undefined;
+          void this.start();
+        }, 5000);
+      }
     }
   }
 }

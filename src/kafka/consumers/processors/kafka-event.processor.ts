@@ -1,8 +1,15 @@
 // Processor dùng chung cho catalog/purchase: parse, validate, retry handler và đẩy event lỗi vào DLQ theo đúng topic domain.
 
 import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { KafkaProducerService } from "../../producers/kafka-producer.service";
-import { DEFAULT_KAFKA_RETRY_ATTEMPTS } from "../../config/kafka.constants";
+import { MetricsService } from "../../../modules/health/metrics.service";
+import {
+  DEFAULT_KAFKA_RETRY_ATTEMPTS,
+  DEFAULT_KAFKA_RETRY_BASE_DELAY_MS,
+  DEFAULT_KAFKA_RETRY_MAX_DELAY_MS,
+  getKafkaRetryDelayMs,
+} from "../../config/kafka.constants";
 
 export class InvalidKafkaEventError extends Error {}
 
@@ -12,7 +19,11 @@ type EventValidator<T> = (input: unknown) => T;
 export class KafkaEventProcessor {
   private readonly logger = new Logger(KafkaEventProcessor.name);
 
-  constructor(private readonly producer: KafkaProducerService) {}
+  constructor(
+    private readonly producer: KafkaProducerService,
+    private readonly config?: ConfigService,
+    private readonly metrics?: MetricsService,
+  ) {}
 
   // Event sai schema được đưa thẳng vào DLQ; lỗi xử lý hạ tầng được retry giới hạn để không block consumer vô hạn.
   async process<T>(
@@ -32,6 +43,10 @@ export class KafkaEventProcessor {
         rawMessage,
         "invalid JSON",
       );
+      this.metrics?.increment("recommendation_kafka_messages_dlq_total", {
+        source: sourceTopic,
+        reason: "invalid_json",
+      });
       return;
     }
 
@@ -45,6 +60,10 @@ export class KafkaEventProcessor {
         payload,
         this.getErrorMessage(error),
       );
+      this.metrics?.increment("recommendation_kafka_messages_dlq_total", {
+        source: sourceTopic,
+        reason: "invalid_schema",
+      });
       return;
     }
 
@@ -55,13 +74,46 @@ export class KafkaEventProcessor {
     ) {
       try {
         await handler(event);
+        this.metrics?.increment(
+          "recommendation_kafka_messages_processed_total",
+          {
+            source: sourceTopic,
+            status: "success",
+          },
+        );
         return;
       } catch (error) {
         const reason = this.getErrorMessage(error);
         if (attempt === DEFAULT_KAFKA_RETRY_ATTEMPTS) {
           await this.publishDeadLetter(dlqTopic, sourceTopic, payload, reason);
+          this.metrics?.increment("recommendation_kafka_messages_dlq_total", {
+            source: sourceTopic,
+          });
           return;
         }
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            getKafkaRetryDelayMs(
+              attempt,
+              Number(
+                this.config?.get<string>(
+                  "KAFKA_RETRY_BASE_DELAY_MS",
+                  String(DEFAULT_KAFKA_RETRY_BASE_DELAY_MS),
+                ),
+              ),
+              Number(
+                this.config?.get<string>(
+                  "KAFKA_RETRY_MAX_DELAY_MS",
+                  String(DEFAULT_KAFKA_RETRY_MAX_DELAY_MS),
+                ),
+              ),
+            ),
+          ),
+        );
+        this.metrics?.increment("recommendation_kafka_retries_total", {
+          source: sourceTopic,
+        });
         this.logger.warn(
           `${sourceTopic} processing retry ${attempt}: ${reason}`,
         );
@@ -82,6 +134,9 @@ export class KafkaEventProcessor {
         : "unknown";
 
     await this.producer.publish(dlqTopic, eventId, {
+      eventVersion: 1,
+      eventId: "dlq:" + sourceTopic + ":" + eventId + ":" + Date.now(),
+      eventName: "recommendation.processing.failed",
       failedAt: new Date().toISOString(),
       sourceTopic,
       reason,

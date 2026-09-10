@@ -22,6 +22,7 @@ import {
   RECOMMENDATION_INTERACTIONS_TOPIC,
   RECOMMENDATION_PURCHASE_DLQ_TOPIC,
   RECOMMENDATION_PURCHASE_TOPICS,
+  getNextKafkaOffset,
 } from "../config/kafka.constants";
 
 @Injectable()
@@ -29,6 +30,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaConsumerService.name);
   private readonly consumer: Consumer;
   private started = false;
+  private stopping = false;
   private restartTimer?: NodeJS.Timeout;
 
   // Cấu hình group riêng cho interaction stream để có thể scale consumer mà không ảnh hưởng service khác.
@@ -62,11 +64,13 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
 
   // Bắt đầu consumer không chặn bootstrap HTTP vì consumer.run là process loop dài hạn.
   async onModuleInit(): Promise<void> {
+    this.stopping = false;
     void this.start();
   }
 
   // Disconnect an toàn nếu consumer đã kết nối thành công.
   async onModuleDestroy(): Promise<void> {
+    this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     await this.consumer.disconnect().catch(() => undefined);
     this.started = false;
@@ -89,10 +93,15 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
       );
 
       await this.consumer.run({
-        eachMessage: async ({ topic, message }) => {
+        // Chỉ commit sau khi processor hoàn tất và DLQ đã được broker xác nhận.
+        autoCommit: false,
+        eachMessage: async ({ topic, partition, message }) => {
           const rawMessage = message.value?.toString() ?? "";
           if (topic === RECOMMENDATION_INTERACTIONS_TOPIC) {
             await this.processor.process(rawMessage);
+            await this.consumer.commitOffsets([
+              { topic, partition, offset: getNextKafkaOffset(message.offset) },
+            ]);
             return;
           }
           if (
@@ -105,6 +114,9 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
               validateCatalogEvent,
               (event) => this.catalog.processEvent(event),
             );
+            await this.consumer.commitOffsets([
+              { topic, partition, offset: getNextKafkaOffset(message.offset) },
+            ]);
             return;
           }
           await this.eventProcessor.process(
@@ -114,6 +126,9 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             validatePurchaseEvent,
             (event) => this.profile.projectPurchase(event),
           );
+          await this.consumer.commitOffsets([
+            { topic, partition, offset: getNextKafkaOffset(message.offset) },
+          ]);
         },
       });
     } catch (error) {
@@ -122,11 +137,14 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
       );
       await this.consumer.disconnect().catch(() => undefined);
       this.started = false;
-      if (!this.restartTimer) {
-        this.restartTimer = setTimeout(() => {
-          this.restartTimer = undefined;
-          void this.start();
-        }, Number(this.config.get<string>("KAFKA_RECONNECT_DELAY_MS", "5000")));
+      if (!this.stopping && !this.restartTimer) {
+        this.restartTimer = setTimeout(
+          () => {
+            this.restartTimer = undefined;
+            void this.start();
+          },
+          Number(this.config.get<string>("KAFKA_RECONNECT_DELAY_MS", "5000")),
+        );
       }
     }
   }

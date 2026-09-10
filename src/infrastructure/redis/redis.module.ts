@@ -50,6 +50,15 @@ export class RecommendationRedisService implements OnModuleDestroy {
     }
   }
 
+  // Ping Redis cho diagnostics/readiness; lỗi được chuyển thành false vì recommendation có PostgreSQL fallback.
+  async isAvailable(): Promise<boolean> {
+    try {
+      return (await this.redis.ping()) === "PONG";
+    } catch {
+      return false;
+    }
+  }
+
   // Tăng version namespace thay cho SCAN/DEL toàn bộ cache, giúp invalidation có độ phức tạp O(1) và không chặn Redis.
   async bumpVersion(key: string): Promise<void> {
     try {

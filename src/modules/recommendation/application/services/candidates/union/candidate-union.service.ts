@@ -22,29 +22,33 @@ export class CandidateUnion {
     source: string,
     contributionByProductId?: Map<
       string,
-      Omit<CandidateContribution, "source">
+      | Omit<CandidateContribution, "source">
+      | Omit<CandidateContribution, "source">[]
     >,
   ): void {
     for (const product of products) {
       if (this.excludedProductIds.has(product.productId)) continue;
       const detail = contributionByProductId?.get(product.productId);
-      const contribution: CandidateContribution | undefined = detail
-        ? { source, ...detail }
-        : undefined;
+      const contributions: CandidateContribution[] = detail
+        ? (Array.isArray(detail) ? detail : [detail]).map((item) => ({
+            source,
+            ...item,
+          }))
+        : [];
       const current = this.candidates.get(product.productId);
       if (current) {
         current.sources.add(source);
-        if (contribution)
+        if (contributions.length)
           current.contributions = [
             ...(current.contributions ?? []),
-            contribution,
+            ...contributions,
           ];
         continue;
       }
       this.candidates.set(product.productId, {
         product,
         sources: new Set([source]),
-        contributions: contribution ? [contribution] : undefined,
+        contributions: contributions.length ? contributions : undefined,
       });
     }
   }

@@ -35,7 +35,12 @@ export class CandidateGenerationService {
           this.fromCatalog(
             "PRODUCT_AFFINITY",
             "MATCHED_PRODUCT_PREFERENCE",
-            () => this.catalog.findByIds(input.profileProductIds),
+            () =>
+              this.catalog.findByIds(
+                input.profileProductIds.filter(
+                  (productId) => !input.excludedProductIds.includes(productId),
+                ),
+              ),
           ),
       },
       {
@@ -135,6 +140,7 @@ export class CandidateGenerationService {
     const candidates = await this.semantic.findCandidates({
       productId: input.productId,
       recentProductIds: input.recentProductIds,
+      recentProductSignals: input.recentProductSignals,
       profileProductIds: input.profileProductIds,
       excludeProductIds: input.excludedProductIds,
       limit: 60,
@@ -189,19 +195,28 @@ export class CandidateGenerationService {
     // Một sản phẩm có thể được nối từ nhiều anchor hoặc nhiều loại quan hệ; giữ đóng góp mạnh nhất để không bị Map ghi đè ngẫu nhiên.
     const candidatesByProductId = new Map<
       string,
-      (typeof candidates)[number]
+      (typeof candidates)[number][]
     >();
     for (const candidate of candidates) {
-      const current = candidatesByProductId.get(candidate.productId);
-      if (!current || candidate.rawScore > current.rawScore) {
-        candidatesByProductId.set(candidate.productId, candidate);
-      }
+      const current = candidatesByProductId.get(candidate.productId) ?? [];
+      current.push(candidate);
+      candidatesByProductId.set(candidate.productId, current);
     }
-    const normalizedCandidates = [...candidatesByProductId.values()].sort(
-      (left, right) =>
-        right.rawScore - left.rawScore ||
-        left.productId.localeCompare(right.productId),
-    );
+    const normalizedCandidates = [...candidatesByProductId.entries()]
+      .map(([productId, contributions]) => ({
+        productId,
+        contributions: contributions.sort(
+          (left, right) =>
+            right.rawScore - left.rawScore ||
+            left.anchorProductId.localeCompare(right.anchorProductId),
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          (right.contributions[0]?.rawScore ?? 0) -
+            (left.contributions[0]?.rawScore ?? 0) ||
+          left.productId.localeCompare(right.productId),
+      );
     const byId = new Map(
       normalizedCandidates.map((candidate) => [candidate.productId, candidate]),
     );
@@ -223,14 +238,12 @@ export class CandidateGenerationService {
           const position = sourcePosition.get(product.productId);
           return [
             product.productId,
-            {
-              rawScore: candidate?.rawScore ?? 0,
+            (candidate?.contributions ?? []).map((contribution) => ({
+              ...contribution,
               reasonCode: "CO_BEHAVIOR_RELATED",
-              anchorProductId: candidate?.anchorProductId,
-              relationType: candidate?.relationType,
               sourceRank: position?.rank ?? index + 1,
               sourceSize: position?.size ?? products.length,
-            },
+            })),
           ];
         }),
       ),

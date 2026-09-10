@@ -31,5 +31,8 @@ export interface CandidateContributionInput {
 export interface CandidateSourceResult {
   source: string;
   products: RecommendationCatalogProduct[];
-  contributionByProductId?: Map<string, CandidateContributionInput>;
+  contributionByProductId?: Map<
+    string,
+    CandidateContributionInput | CandidateContributionInput[]
+  >;
 }

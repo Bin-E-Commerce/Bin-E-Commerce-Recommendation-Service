@@ -16,6 +16,11 @@ export class SemanticCandidateService {
   async findCandidates(input: {
     productId?: string;
     recentProductIds: string[];
+    recentProductSignals?: Array<{
+      productId: string;
+      weight: number;
+      interactionType: string;
+    }>;
     profileProductIds: string[];
     excludeProductIds: string[];
     limit: number;
@@ -34,15 +39,24 @@ export class SemanticCandidateService {
     )
       return [];
     try {
-      const anchors = [
-        ...new Set(
-          [
-            input.productId,
-            ...input.recentProductIds.slice(0, 5),
-            ...input.profileProductIds.slice(0, 5),
-          ].filter(Boolean) as string[],
-        ),
-      ];
+      const anchorWeights = new Map<string, number>();
+      const addAnchor = (id: string | undefined, weight: number): void => {
+        if (!id || !Number.isFinite(weight) || weight <= 0) return;
+        anchorWeights.set(id, (anchorWeights.get(id) ?? 0) + weight);
+      };
+      addAnchor(input.productId, 1);
+      const signals = new Map(
+        (input.recentProductSignals ?? []).map((signal) => [
+          signal.productId,
+          signal,
+        ]),
+      );
+      for (const productId of input.recentProductIds.slice(0, 5)) {
+        addAnchor(productId, signals.get(productId)?.weight ?? 1);
+      }
+      for (const productId of input.profileProductIds.slice(0, 5))
+        addAnchor(productId, 0.5);
+      const anchors = [...anchorWeights.keys()];
       const vectors = (
         await Promise.all(
           anchors.map(async (id) => ({
@@ -55,10 +69,17 @@ export class SemanticCandidateService {
       );
       if (!vectors.length) return [];
       const length = vectors[0]!.vector.length;
+      const totalWeight = vectors.reduce(
+        (sum, item) => sum + (anchorWeights.get(item.id) ?? 0),
+        0,
+      );
+      if (totalWeight <= 0) return [];
       const centroid = vectors.reduce(
         (sum, item) =>
           item.vector.map(
-            (value, index) => sum[index]! + value / vectors.length,
+            (value, index) =>
+              sum[index]! +
+              (value * (anchorWeights.get(item.id) ?? 0)) / totalWeight,
           ),
         new Array<number>(length).fill(0),
       );
@@ -70,7 +91,9 @@ export class SemanticCandidateService {
       return results.map((result) => ({
         productId: result.productId,
         rawScore: result.similarityScore,
-        anchorProductId: vectors[0]?.id,
+        anchorProductId: [...anchorWeights.entries()].sort(
+          (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+        )[0]?.[0],
         modelVersion: result.modelVersion,
       }));
     } catch {

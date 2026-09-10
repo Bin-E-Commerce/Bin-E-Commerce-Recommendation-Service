@@ -9,9 +9,11 @@ export class RecommendationProductRelationEntity {
   id!: string;
 
   @Column({ name: "source_product_id", type: "varchar", length: 128 })
+  // Product làm anchor để truy vấn các sản phẩm liên quan theo hướng source -> target.
   sourceProductId!: string;
 
   @Column({ name: "target_product_id", type: "varchar", length: 128 })
+  // Product được đề xuất từ anchor; self-relation bị loại ở projection policy.
   targetProductId!: string;
 
   @Column({ name: "relation_type", type: "varchar", length: 24 })
@@ -24,9 +26,11 @@ export class RecommendationProductRelationEntity {
   negativeCount!: number;
 
   @Column({ name: "relation_score", type: "double precision", default: 0 })
+  // Điểm tích lũy trước decay; projection chỉ cộng delta, query mới áp dụng half-life.
   relationScore!: number;
 
   @Column({ name: "last_signal_at", type: "timestamptz" })
+  // Tín hiệu gần nhất dùng làm mốc decay để quan hệ cũ tự giảm ảnh hưởng.
   lastSignalAt!: Date;
 
   @Column({ name: "window_start", type: "timestamptz" })

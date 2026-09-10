@@ -46,6 +46,7 @@ export class RelationRepository {
       userId: string | null;
       sessionId: string | null;
       since: Date;
+      until: Date;
       types: string[];
       limit: number;
     },
@@ -59,6 +60,7 @@ export class RelationRepository {
       .select("DISTINCT interaction.product_id", "productId")
       .where("interaction.product_id IS NOT NULL")
       .andWhere("interaction.occurred_at >= :since", { since: input.since })
+      .andWhere("interaction.occurred_at <= :until", { until: input.until })
       .andWhere("interaction.interaction_type IN (:...types)", {
         types: input.types,
       });
@@ -73,8 +75,9 @@ export class RelationRepository {
       .select("interaction.product_id", "productId")
       .addSelect("MAX(interaction.occurred_at)", "lastOccurredAt")
       .groupBy("interaction.product_id")
-      .orderBy("lastOccurredAt", "DESC")
-      .addOrderBy("productId", "ASC")
+      // Sắp xếp bằng biểu thức/cột gốc để PostgreSQL không hạ alias camelCase thành chữ thường.
+      .orderBy("MAX(interaction.occurred_at)", "DESC")
+      .addOrderBy("interaction.product_id", "ASC")
       .limit(Math.min(input.limit, 50))
       .getRawMany<{ productId: string }>();
     return rows.map((row) => row.productId).filter(Boolean);

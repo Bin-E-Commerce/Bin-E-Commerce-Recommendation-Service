@@ -61,6 +61,7 @@ export class RelationProjectionService {
             userId: event.data.userId,
             sessionId: event.data.sessionId,
             since: new Date(occurredAt.getTime() - windowMs),
+            until: occurredAt,
             types,
             limit: type === "CO_VIEW" ? 20 : 50,
           },

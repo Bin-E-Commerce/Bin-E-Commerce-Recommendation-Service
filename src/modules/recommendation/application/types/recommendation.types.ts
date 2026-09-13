@@ -54,8 +54,10 @@ export interface RecommendationResponse {
   generatedAt: string;
   ruleVersion: string;
   rankingPolicyVersion: string;
+  rankingModelVersion: string | null;
   experiment: {
     id: string;
-    variant: "CONTROL" | "HYBRID";
+    // CONTROL được giữ để client đọc response/token cache lịch sử, không được phát sinh từ assignment mới.
+    variant: "CONTROL" | "HYBRID" | "ML_HYBRID";
   } | null;
 }

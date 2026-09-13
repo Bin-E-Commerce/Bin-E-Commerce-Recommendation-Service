@@ -4,6 +4,6 @@ import { IsUUID } from "class-validator";
 
 export class MergeRecommendationSessionDto {
   // Session UUID là định danh duy nhất để merge idempotent và không nhận chuỗi tùy ý từ client.
-  @IsUUID()
+  @IsUUID("4")
   sessionId!: string;
 }

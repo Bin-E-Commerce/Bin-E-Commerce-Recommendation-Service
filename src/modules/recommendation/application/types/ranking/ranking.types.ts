@@ -3,7 +3,7 @@
 
 import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
 
-export type RankingMode = "CONTROL" | "HYBRID";
+export type RankingMode = "HYBRID" | "ML_HYBRID";
 
 export type RecommendationCandidate = {
   product: RecommendationCatalogProduct;

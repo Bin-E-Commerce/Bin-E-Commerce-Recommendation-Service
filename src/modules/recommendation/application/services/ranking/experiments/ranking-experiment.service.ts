@@ -3,7 +3,7 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
-export type RankingExperimentVariant = "CONTROL" | "HYBRID";
+export type RankingExperimentVariant = "HYBRID" | "ML_HYBRID";
 
 @Injectable()
 export class RankingExperimentService {
@@ -21,18 +21,19 @@ export class RankingExperimentService {
       this.config.get<string>("RANKING_EXPERIMENT_ENABLED", "false") === "true";
     const experimentId = this.config.get<string>(
       "RANKING_EXPERIMENT_ID",
-      "recommendation-ranking-hybrid",
+      "recommendation-standard-ai-v1",
     );
     const traffic = this.clampPercent(
       Number(
         this.config.get<string>("RANKING_EXPERIMENT_TRAFFIC_PERCENT", "0"),
       ),
     );
-    if (!enabled || traffic === 0) return { id: null, variant: "CONTROL" };
+    if (!enabled || traffic === 0) return { id: null, variant: "HYBRID" };
     const bucket = this.hash(`${experimentId}:${actorType}:${actorId}`) % 100;
+    // Standard là baseline cố định; traffic trong ngưỡng chỉ được gán AI sau khi rollout được bật.
     return {
       id: experimentId,
-      variant: bucket < traffic ? "HYBRID" : "CONTROL",
+      variant: bucket < traffic ? "ML_HYBRID" : "HYBRID",
     };
   }
 

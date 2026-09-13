@@ -12,6 +12,12 @@ import type {
   RecommendationCandidate,
 } from "../../../types/ranking/ranking.types";
 
+export type RankingPreferenceLookup = {
+  product: ReadonlyMap<string, PreferenceValue>;
+  category: ReadonlyMap<string, PreferenceValue>;
+  brand: ReadonlyMap<string, PreferenceValue>;
+};
+
 @Injectable()
 export class RankingFeatureService {
   constructor(private readonly rules: RecommendationRuleService) {}
@@ -23,19 +29,19 @@ export class RankingFeatureService {
     categories: PreferenceValue[],
     brands: PreferenceValue[],
     context: SessionContext | null,
+    lookup?: RankingPreferenceLookup,
   ): RankingFeatureVector {
-    const productPreference = this.findPreference(
-      products,
+    const preferenceLookup =
+      lookup ?? this.createPreferenceLookup(products, categories, brands);
+    const productPreference = preferenceLookup.product.get(
       candidate.product.productId,
     );
-    const categoryPreference = this.findPreference(
-      categories,
-      candidate.product.categoryId,
-    );
-    const brandPreference = this.findPreference(
-      brands,
-      candidate.product.brandId,
-    );
+    const categoryPreference = candidate.product.categoryId
+      ? preferenceLookup.category.get(candidate.product.categoryId)
+      : undefined;
+    const brandPreference = candidate.product.brandId
+      ? preferenceLookup.brand.get(candidate.product.brandId)
+      : undefined;
     const contributions = candidate.contributions ?? [];
     const semantic = contributions
       .filter((item) => item.source === "SEMANTIC_SIMILARITY")
@@ -199,11 +205,17 @@ export class RankingFeatureService {
   }
 
   // Tìm preference theo dimension key mà không expose entity persistence ra ranker.
-  private findPreference(
-    values: PreferenceValue[],
-    key: string | null,
-  ): PreferenceValue | undefined {
-    return key ? values.find((item) => item.dimensionKey === key) : undefined;
+  // Tạo lookup dùng chung cho cả deterministic ranker và ML adapter để batch lớn không quét lại preference arrays.
+  createPreferenceLookup(
+    products: PreferenceValue[],
+    categories: PreferenceValue[],
+    brands: PreferenceValue[],
+  ): RankingPreferenceLookup {
+    return {
+      product: new Map(products.map((item) => [item.dimensionKey, item])),
+      category: new Map(categories.map((item) => [item.dimensionKey, item])),
+      brand: new Map(brands.map((item) => [item.dimensionKey, item])),
+    };
   }
 
   // Clamp tập trung giúp mọi feature và penalty giữ đúng invariant của weighted policy.

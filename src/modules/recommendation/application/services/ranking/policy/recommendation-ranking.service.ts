@@ -1,9 +1,12 @@
-// File này là facade ranking cho Recommendation Service, giữ control Phase 2 và hybrid Phase 4 cùng một boundary.
+// File này là facade ranking cho Recommendation Service; Standard dùng Hybrid deterministic, AI chỉ là lớp blend tùy chọn.
 // Candidate generation không nằm trong file này; service chỉ chấm điểm, diversity và trả kết quả deterministic.
 
 import { Injectable } from "@nestjs/common";
 import type { RecommendationCatalogProduct } from "../../../../../catalog/application/types/catalog-product.type";
-import { RecommendationRuleService } from "../../../../../profiles/application/services/rules/recommendation-rule.service";
+import {
+  RecommendationRuleService,
+  type HybridRankingWeights,
+} from "../../../../../profiles/application/services/rules/recommendation-rule.service";
 import type {
   PreferenceValue,
   SessionContext,
@@ -13,9 +16,11 @@ import type {
   RecommendationSurface,
 } from "../../../types/recommendation.types";
 import { RankingFeatureService } from "../features/ranking-feature.service";
+import type { RankingPreferenceLookup } from "../features/ranking-feature.service";
 import type {
   RankedCandidate,
   RankingMode,
+  RankingFeatureVector,
   RecommendationCandidate,
 } from "../../../types/ranking/ranking.types";
 
@@ -28,24 +33,30 @@ export class RecommendationRankingService {
     private readonly features: RankingFeatureService,
   ) {}
 
-  // Giữ version Phase 2 để client cũ và analytics cũ vẫn đọc được trường ruleVersion.
+  // Giữ trường ruleVersion trong response để tương thích API, nhưng version mới phản ánh Standard Ranking.
   getRuleVersion(): string {
     return this.rules.getRuleVersion();
   }
 
-  // Trả version policy đang dùng để cache không phục vụ nhầm kết quả giữa control và hybrid.
+  // Tách cache theo Standard và AI-Enhanced để không dùng lẫn kết quả từ hai mode.
   getPolicyVersion(mode: RankingMode): string {
-    return mode === "HYBRID"
-      ? this.rules.getHybridPolicyVersion()
-      : this.rules.getRuleVersion();
+    if (mode === "ML_HYBRID") return this.rules.getMlRankingPolicyVersion();
+    return this.rules.getHybridPolicyVersion();
   }
 
-  // Expose feature flag qua facade để query service không phụ thuộc trực tiếp vào ConfigService.
-  isHybridRankingEnabled(): boolean {
-    return this.rules.isHybridRankingEnabled();
+  // Expose ML flag qua ranking facade để query orchestration không phụ thuộc ConfigService.
+  isMlRankingEnabled(): boolean {
+    return this.rules.isMlRankingEnabled();
   }
 
-  // Chấm điểm theo mode đã được experiment service quyết định; CONTROL dùng công thức cũ, HYBRID dùng feature Phase 4.
+  // Trả snapshot policy để query trace không cần đọc ConfigService trực tiếp.
+  getPolicySnapshot(): ReturnType<
+    RecommendationRuleService["getPolicySnapshot"]
+  > {
+    return this.rules.getPolicySnapshot();
+  }
+
+  // Standard luôn dùng feature Hybrid deterministic; AI-Enhanced chỉ blend thêm prediction hợp lệ.
   rank(
     candidates: RecommendationCandidate[],
     products: PreferenceValue[],
@@ -53,15 +64,46 @@ export class RecommendationRankingService {
     brands: PreferenceValue[],
     context: SessionContext | null,
     strategy: RecommendationStrategy,
-    options: { mode?: RankingMode; surface?: RecommendationSurface } = {},
+    options: {
+      mode?: RankingMode;
+      surface?: RecommendationSurface;
+      mlScores?: ReadonlyMap<string, number>;
+      mlFeatures?: ReadonlyMap<string, RankingFeatureVector>;
+    } = {},
   ): RankedCandidate[] {
-    const mode = options.mode ?? "CONTROL";
+    const mode = options.mode ?? "HYBRID";
     const surface = options.surface ?? "home";
+    // Tạo lookup một lần cho cả batch; ranker không cần quét lại ba mảng preference cho từng product.
+    const preferences = this.createPreferenceLookup(
+      products,
+      categories,
+      brands,
+    );
+    const hybridWeights = this.rules.getHybridRankingWeights();
     const ranked = candidates
       .map((candidate) =>
-        mode === "HYBRID"
-          ? this.scoreHybrid(candidate, products, categories, brands, context)
-          : this.scoreControl(candidate, products, categories, brands, context),
+        mode === "ML_HYBRID"
+          ? this.scoreMlHybrid(
+              candidate,
+              products,
+              categories,
+              brands,
+              context,
+              preferences,
+              options.mlScores,
+              options.mlFeatures?.get(candidate.product.productId),
+              hybridWeights,
+            )
+          : this.scoreHybrid(
+              candidate,
+              products,
+              categories,
+              brands,
+              context,
+              preferences,
+              undefined,
+              hybridWeights,
+            ),
       )
       .sort(this.compareCandidates);
     const mixed =
@@ -69,86 +111,27 @@ export class RecommendationRankingService {
     return this.applyDiversity(mixed, surface).slice(0, RESULT_SET_LIMIT);
   }
 
-  // Giữ score Phase 2 làm baseline để A/B test chỉ đo tác động của feature mới.
-  private scoreControl(
-    candidate: RecommendationCandidate,
-    products: PreferenceValue[],
-    categories: PreferenceValue[],
-    brands: PreferenceValue[],
-    context: SessionContext | null,
-  ): RankedCandidate {
-    const productScore = this.decayedScore(
-      products.find(
-        (item) => item.dimensionKey === candidate.product.productId,
-      ),
-    );
-    const categoryScore = this.decayedScore(
-      categories.find(
-        (item) => item.dimensionKey === candidate.product.categoryId,
-      ),
-    );
-    const brandScore = this.decayedScore(
-      brands.find((item) => item.dimensionKey === candidate.product.brandId),
-    );
-    const contextScore =
-      (candidate.product.categoryId &&
-      context?.recentCategoryIds.includes(candidate.product.categoryId)
-        ? 0.7
-        : 0) +
-      (candidate.product.brandId &&
-      context?.recentBrandIds.includes(candidate.product.brandId)
-        ? 0.3
-        : 0);
-    const totalSold = Number.isFinite(candidate.product.totalSold)
-      ? Math.max(0, candidate.product.totalSold)
-      : 0;
-    const popularity = Math.min(1, Math.log1p(totalSold) / 12);
-    const ratingValue = Number(candidate.product.ratingAvg ?? 0);
-    const rating = Number.isFinite(ratingValue)
-      ? Math.max(0, Math.min(1, ratingValue / 5))
-      : 0;
-    const freshness = Math.max(
-      0,
-      Math.min(
-        1,
-        1 -
-          (Date.now() - candidate.product.createdAt.getTime()) /
-            (1000 * 60 * 60 * 24 * 365),
-      ),
-    );
-    const exploration =
-      (candidate.sources.has("NEWEST") || candidate.sources.has("EXPLORE")) &&
-      !candidate.sources.has("PRODUCT_AFFINITY")
-        ? 1
-        : 0;
-    const weights = this.rules.getRankingWeights();
-    const score =
-      weights.profileAffinity * Math.min(1, productScore / 8) +
-      weights.sessionContext *
-        Math.min(1, (categoryScore + brandScore + contextScore) / 4) +
-      weights.popularity * popularity +
-      weights.freshness * freshness +
-      weights.quality * rating +
-      weights.exploration * exploration;
-    return { ...candidate, score };
-  }
-
-  // Tính feature Phase 4 bằng policy cố định; feature thiếu nhận điểm 0 để các candidate luôn so sánh trên cùng một thang điểm.
+  // Tính điểm Standard từ feature đã chuẩn hóa; feature thiếu nhận 0 để candidate cùng thang điểm.
   private scoreHybrid(
     candidate: RecommendationCandidate,
     products: PreferenceValue[],
     categories: PreferenceValue[],
     brands: PreferenceValue[],
     context: SessionContext | null,
+    preferences: RankingPreferenceLookup,
+    precomputedFeatures?: RankingFeatureVector,
+    weights: HybridRankingWeights = this.rules.getHybridRankingWeights(),
   ): RankedCandidate {
-    const features = this.features.build(
-      candidate,
-      products,
-      categories,
-      brands,
-      context,
-    );
-    const weights = this.rules.getHybridRankingWeights();
+    const features =
+      precomputedFeatures ??
+      this.features.build(
+        candidate,
+        products,
+        categories,
+        brands,
+        context,
+        preferences,
+      );
     const score =
       (Object.keys(weights) as Array<keyof typeof weights>).reduce(
         (sum, key) => sum + weights[key] * features[key],
@@ -161,17 +144,51 @@ export class RecommendationRankingService {
     };
   }
 
-  // Decay baseline preference đúng theo policy Phase 2 để control không đổi semantics.
-  private decayedScore(value: PreferenceValue | undefined): number {
-    if (!value) return 0;
-    const ageDays = Math.max(
-      0,
-      (Date.now() - value.lastSignalAt.getTime()) / 86_400_000,
+  // Blend ML score tối đa theo policy với Hybrid deterministic; thiếu prediction thì giữ nguyên Hybrid score.
+  private scoreMlHybrid(
+    candidate: RecommendationCandidate,
+    products: PreferenceValue[],
+    categories: PreferenceValue[],
+    brands: PreferenceValue[],
+    context: SessionContext | null,
+    preferences: RankingPreferenceLookup,
+    mlScores?: ReadonlyMap<string, number>,
+    mlFeatures?: RankingFeatureVector,
+    weights?: HybridRankingWeights,
+  ): RankedCandidate {
+    const baseline = this.scoreHybrid(
+      candidate,
+      products,
+      categories,
+      brands,
+      context,
+      preferences,
+      mlFeatures,
+      weights,
     );
-    const halfLife = this.rules.getProfileHalfLifeDays();
-    return Number.isFinite(value.score)
-      ? value.score * Math.pow(0.5, ageDays / halfLife)
-      : 0;
+    const mlScore = mlScores?.get(candidate.product.productId);
+    if (mlScore === undefined || !Number.isFinite(mlScore)) return baseline;
+    const blend = this.rules.getMlRankingBlend();
+    return {
+      ...baseline,
+      score: Math.min(
+        1,
+        Math.max(0, baseline.score * (1 - blend) + mlScore * blend),
+      ),
+    };
+  }
+
+  // Chuyển preference arrays thành map một lần để ranking có độ phức tạp gần O(candidate count).
+  private createPreferenceLookup(
+    products: PreferenceValue[],
+    categories: PreferenceValue[],
+    brands: PreferenceValue[],
+  ): RankingPreferenceLookup {
+    return {
+      product: new Map(products.map((item) => [item.dimensionKey, item])),
+      category: new Map(categories.map((item) => [item.dimensionKey, item])),
+      brand: new Map(brands.map((item) => [item.dimensionKey, item])),
+    };
   }
 
   // Diversity chạy theo cửa sổ surface cố định để pageSize request khác nhau không làm thay đổi ranking canonical.

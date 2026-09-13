@@ -36,7 +36,7 @@ describe("RankingExperimentService", () => {
     jest.clearAllMocks();
   });
 
-  it("should keep anonymous assignment in control when experiment is disabled", () => {
+  it("should use Standard Ranking when the AI experiment is disabled", () => {
     // Arrange
     mockConfigService.get.mockImplementation(
       (_key: string, fallback?: unknown) => fallback as never,
@@ -46,7 +46,7 @@ describe("RankingExperimentService", () => {
     const result = target.resolve("SESSION", "session-1");
 
     // Assert
-    expect(result).toEqual({ id: null, variant: "CONTROL" });
+    expect(result).toEqual({ id: null, variant: "HYBRID" });
   });
 
   it("should return the same variant for the same actor", () => {
@@ -71,7 +71,7 @@ describe("RankingExperimentService", () => {
     expect(first.id).toBe("phase4-test");
   });
 
-  it("should assign every actor to hybrid when traffic is one hundred percent", () => {
+  it("should assign every actor to AI-Enhanced when experiment traffic is one hundred percent", () => {
     // Arrange
     mockConfigService.get.mockImplementation(
       (key: string, fallback?: unknown) => {
@@ -88,6 +88,29 @@ describe("RankingExperimentService", () => {
     const result = target.resolve("USER", "user-100");
 
     // Assert
-    expect(result).toEqual({ id: "phase4-test", variant: "HYBRID" });
+    expect(result).toEqual({ id: "phase4-test", variant: "ML_HYBRID" });
+  });
+
+  it("should assign actors only to Standard or AI-Enhanced variants", () => {
+    // Arrange
+    mockConfigService.get.mockImplementation(
+      (key: string, fallback?: unknown) => {
+        const values: Record<string, string> = {
+          RANKING_EXPERIMENT_ENABLED: "true",
+          RANKING_EXPERIMENT_ID: "ml-test",
+          RANKING_EXPERIMENT_TRAFFIC_PERCENT: "50",
+        };
+        return (values[key] ?? fallback) as never;
+      },
+    );
+
+    // Act
+    const variants = Array.from(
+      { length: 100 },
+      (_, index) => target.resolve("USER", `user-${index}`).variant,
+    );
+
+    // Assert
+    expect(new Set(variants)).toEqual(new Set(["HYBRID", "ML_HYBRID"]));
   });
 });

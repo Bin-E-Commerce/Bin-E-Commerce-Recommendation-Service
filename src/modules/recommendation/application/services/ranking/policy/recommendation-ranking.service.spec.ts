@@ -1,4 +1,4 @@
-// Unit test cho control/hybrid ranker và diversity quota; bảo vệ contract Phase 2 khi rollout Phase 4.
+// Unit test cho Standard/AI-Enhanced ranking và diversity quota.
 
 import { Test, type TestingModule } from "@nestjs/testing";
 import { createMock, type DeepMocked } from "@golevelup/ts-jest";
@@ -76,15 +76,6 @@ describe("RecommendationRankingService", () => {
     mockRules = createMock<RecommendationRuleService>();
     mockRules.getRuleVersion.mockReturnValue("phase2-test");
     mockRules.getHybridPolicyVersion.mockReturnValue("phase4-test");
-    mockRules.getProfileHalfLifeDays.mockReturnValue(7);
-    mockRules.getRankingWeights.mockReturnValue({
-      profileAffinity: 0.35,
-      sessionContext: 0.2,
-      popularity: 0.15,
-      freshness: 0.1,
-      quality: 0.1,
-      exploration: 0.1,
-    });
     mockRules.getHybridRankingWeights.mockReturnValue({
       profileAffinity: 0.25,
       sessionContext: 0.18,
@@ -95,6 +86,8 @@ describe("RecommendationRankingService", () => {
       quality: 0.08,
       exploration: 0.04,
     });
+    mockRules.getMlRankingBlend.mockReturnValue(0.3);
+    mockRules.getMlRankingPolicyVersion.mockReturnValue("ml-test-v1");
     mockRules.getRelationScoreScale.mockReturnValue(1);
     mockRules.getDiversityLimits.mockImplementation((surface) =>
       surface === "product_detail"
@@ -164,7 +157,7 @@ describe("RecommendationRankingService", () => {
     expect(mockFeatures.build).toHaveBeenCalledTimes(2);
   });
 
-  it("should select another category before relaxing the product-detail diversity quota", () => {
+  it("should use Standard Ranking by default and select another category before relaxing diversity", () => {
     // Arrange
     const candidates = [
       createCandidate(createProduct("product-a-1"), "CATEGORY_AFFINITY"),
@@ -178,7 +171,6 @@ describe("RecommendationRankingService", () => {
 
     // Act
     const result = target.rank(candidates, [], [], [], null, "PERSONALIZED", {
-      mode: "CONTROL",
       surface: "product_detail",
     });
 
@@ -189,5 +181,32 @@ describe("RecommendationRankingService", () => {
       "category-2",
     ]);
     expect(result[2]?.diversityRelaxed).toBeUndefined();
+  });
+
+  it("should blend ML score with deterministic hybrid score", () => {
+    // Arrange
+    const candidate = createCandidate(createProduct("product-ml"), "EXPLORE");
+    mockFeatures.build.mockReturnValue({
+      profileAffinity: 0,
+      sessionContext: 0,
+      semanticSimilarity: 0,
+      coBehavior: 0,
+      popularity: 0,
+      freshness: 0,
+      quality: 0,
+      exploration: 0,
+      negativePenalty: 0,
+    });
+
+    // Act
+    const result = target.rank([candidate], [], [], [], null, "PERSONALIZED", {
+      mode: "ML_HYBRID",
+      surface: "home",
+      mlScores: new Map([["product-ml", 1]]),
+    });
+
+    // Assert
+    expect(result[0]?.score).toBeCloseTo(0.3);
+    expect(mockFeatures.build).toHaveBeenCalledTimes(1);
   });
 });

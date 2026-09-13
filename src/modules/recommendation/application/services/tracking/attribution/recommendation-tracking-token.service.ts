@@ -14,7 +14,7 @@ export interface RecommendationTrackingTokenInput {
   surface: "home" | "product_detail" | "recommendations_page";
   policyVersion: string;
   experimentId: string | null;
-  experimentVariant: "CONTROL" | "HYBRID" | null;
+  experimentVariant: "CONTROL" | "HYBRID" | "ML_HYBRID" | null;
 }
 
 @Injectable()

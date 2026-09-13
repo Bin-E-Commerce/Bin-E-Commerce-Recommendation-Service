@@ -13,7 +13,7 @@ export class RelationCandidateService {
     private readonly config: ConfigService,
   ) {}
 
-  // Lấy target từ recent/profile anchors mà không làm thay đổi final Phase2 ranking formula.
+  // Lấy target từ recent/profile anchors để bổ sung candidate cho Standard Ranking.
   async findCandidates(
     anchorProductIds: string[],
     excludeProductIds: string[],
@@ -34,13 +34,14 @@ export class RelationCandidateService {
     )
       return [];
     try {
+      const excluded = new Set(excludeProductIds);
       return (
         await this.repository.findTargets(
-          anchorProductIds,
+          [...new Set(anchorProductIds)].slice(0, 10),
           ["CO_PURCHASE", "CO_CART", "CO_VIEW"],
-          limit,
+          Math.min(limit, 100),
         )
-      ).filter((item) => !excludeProductIds.includes(item.productId));
+      ).filter((item) => !excluded.has(item.productId));
     } catch {
       return [];
     }

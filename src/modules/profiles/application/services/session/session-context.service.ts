@@ -1,16 +1,35 @@
 // Service này giữ session intent ngắn hạn trong Redis; mọi lỗi cache đều được chuyển thành context rỗng an toàn.
 
 import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { RecommendationRedisService } from "../../../../../infrastructure/redis/redis.module";
 import type { SessionContext } from "../../types/profile.types";
 import type { RecommendationInteractionRecordedEvent } from "../../../../interactions/application/types/interaction-event.types";
-
-const SESSION_TTL_SECONDS = 24 * 60 * 60;
-const MAX_RECENT_ITEMS = 30;
+import { RecommendationRuleService } from "../rules/recommendation-rule.service";
 
 @Injectable()
 export class SessionContextService {
-  constructor(private readonly redis: RecommendationRedisService) {}
+  private readonly sessionTtlSeconds: number;
+  private readonly maxRecentItems: number;
+
+  constructor(
+    private readonly redis: RecommendationRedisService,
+    private readonly rules: RecommendationRuleService,
+    private readonly config: ConfigService,
+  ) {
+    this.sessionTtlSeconds = this.readConfigNumber(
+      "RECOMMENDATION_SESSION_TTL_SECONDS",
+      24 * 60 * 60,
+      60,
+      7 * 24 * 60 * 60,
+    );
+    this.maxRecentItems = this.readConfigNumber(
+      "RECOMMENDATION_SESSION_MAX_RECENT_ITEMS",
+      30,
+      1,
+      100,
+    );
+  }
 
   // Đọc session context để candidate engine hiểu ý định hiện tại của guest/user trong cùng phiên.
   async get(sessionId: string): Promise<SessionContext | null> {
@@ -74,7 +93,7 @@ export class SessionContextService {
           key,
           previous.version,
           next,
-          SESSION_TTL_SECONDS,
+          this.sessionTtlSeconds,
         )
       )
         return;
@@ -111,7 +130,7 @@ export class SessionContextService {
     if (!value) return values;
     return [value, ...values.filter((item) => item !== value)].slice(
       0,
-      MAX_RECENT_ITEMS,
+      this.maxRecentItems,
     );
   }
 
@@ -136,22 +155,29 @@ export class SessionContextService {
     values: SessionContext["recentProductSignals"],
   ): NonNullable<SessionContext["recentProductSignals"]> {
     if (!productId) return values ?? [];
-    const weights: Record<string, number> = {
-      PRODUCT_VIEWED: 1,
-      PRODUCT_CLICKED: 2,
-      PRODUCT_ADDED_TO_CART: 4,
-      PRODUCT_REMOVED_FROM_CART: -2,
-    };
-    const weight = weights[interactionType] ?? 0;
+    const weight = this.rules.getInteractionWeight(interactionType);
     if (weight === 0) return values ?? [];
     return [
       { productId, weight, interactionType },
       ...(values ?? []).filter((item) => item.productId !== productId),
-    ].slice(0, MAX_RECENT_ITEMS);
+    ].slice(0, this.maxRecentItems);
   }
 
   // Chuẩn hóa key Redis để các surface dùng cùng session context và invalidation không bị lệch namespace.
   private key(sessionId: string): string {
     return `recommendation:session:${sessionId}:context`;
+  }
+
+  // Giới hạn config số để TTL/size sai không làm session phình hoặc Redis giữ dữ liệu vô thời hạn.
+  private readConfigNumber(
+    key: string,
+    fallback: number,
+    minimum: number,
+    maximum: number,
+  ): number {
+    const value = Number(this.config.get<string>(key, String(fallback)));
+    return Number.isFinite(value)
+      ? Math.min(Math.max(Math.trunc(value), minimum), maximum)
+      : fallback;
   }
 }

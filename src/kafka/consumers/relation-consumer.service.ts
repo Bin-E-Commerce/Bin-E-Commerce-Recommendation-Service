@@ -12,6 +12,10 @@ import type {
 } from "@common/kafka/events/recommendation.events";
 import { RecommendationEvents } from "@common/kafka/events/recommendation.events";
 import {
+  DEFAULT_KAFKA_RETRY_ATTEMPTS,
+  DEFAULT_KAFKA_RETRY_BASE_DELAY_MS,
+  DEFAULT_KAFKA_RETRY_MAX_DELAY_MS,
+  getKafkaRetryDelayMs,
   getNextKafkaOffset,
   RECOMMENDATION_INTERACTIONS_TOPIC,
   RECOMMENDATION_PURCHASE_TOPICS,
@@ -88,29 +92,44 @@ export class RelationConsumerService implements OnModuleInit, OnModuleDestroy {
           } catch {
             await this.producer.publish(
               RECOMMENDATION_RELATION_DLQ_TOPIC,
-              message.key?.toString() ?? "relation-invalid",
-              { errorCode: "INVALID_RELATION_EVENT", raw: raw.slice(0, 2000) },
+              message.key?.toString() ??
+                `relation-invalid:${partition}:${message.offset}`,
+              {
+                eventVersion: 1,
+                eventId: `dlq:relations:${topic}:${partition}:${message.offset}`,
+                eventName: "recommendation.processing.failed",
+                failedAt: new Date().toISOString(),
+                sourceTopic: topic,
+                reason: "INVALID_RELATION_EVENT",
+                raw: raw.slice(0, 2000),
+              },
             );
             await this.consumer.commitOffsets([
               { topic, partition, offset: getNextKafkaOffset(message.offset) },
             ]);
             return;
           }
-          if (
-            topic === RECOMMENDATION_INTERACTIONS_TOPIC &&
-            event.eventName === RecommendationEvents.INTERACTION_RECORDED
-          )
-            await this.projection.projectInteraction(
-              event as RecommendationInteractionRecordedEvent,
-            );
-          if (
-            (RECOMMENDATION_PURCHASE_TOPICS as readonly string[]).includes(
-              topic,
-            )
-          )
-            await this.projection.projectPurchase(
-              event as unknown as RecommendationPurchaseEvent,
-            );
+          // Lỗi database tạm thời được retry có giới hạn; lỗi bền vững phải vào DLQ,
+          // nếu không consumer sẽ giữ một poison message và restart vô hạn ở cùng offset.
+          await this.projectWithRetry(topic, event, async () => {
+            if (
+              topic === RECOMMENDATION_INTERACTIONS_TOPIC &&
+              event.eventName === RecommendationEvents.INTERACTION_RECORDED
+            ) {
+              await this.projection.projectInteraction(
+                event as RecommendationInteractionRecordedEvent,
+              );
+            }
+            if (
+              (RECOMMENDATION_PURCHASE_TOPICS as readonly string[]).includes(
+                topic,
+              )
+            ) {
+              await this.projection.projectPurchase(
+                event as unknown as RecommendationPurchaseEvent,
+              );
+            }
+          });
           await this.consumer.commitOffsets([
             { topic, partition, offset: getNextKafkaOffset(message.offset) },
           ]);
@@ -129,5 +148,83 @@ export class RelationConsumerService implements OnModuleInit, OnModuleDestroy {
         }, 5000);
       }
     }
+  }
+
+  // Chạy projection tối đa vài lần rồi chuyển event lỗi sang DLQ; nếu publish DLQ thất bại thì không commit offset để Kafka retry lại.
+  private async projectWithRetry(
+    topic: string,
+    event: RecommendationInteractionRecordedEvent | RecommendationPurchaseEvent,
+    project: () => Promise<void>,
+  ): Promise<void> {
+    const maxAttempts = this.getPositiveConfig(
+      "KAFKA_RELATION_RETRY_ATTEMPTS",
+      DEFAULT_KAFKA_RETRY_ATTEMPTS,
+      1,
+      10,
+    );
+    const baseDelayMs = this.getPositiveConfig(
+      "KAFKA_RELATION_RETRY_BASE_DELAY_MS",
+      DEFAULT_KAFKA_RETRY_BASE_DELAY_MS,
+      0,
+      60_000,
+    );
+    const maxDelayMs = this.getPositiveConfig(
+      "KAFKA_RELATION_RETRY_MAX_DELAY_MS",
+      DEFAULT_KAFKA_RETRY_MAX_DELAY_MS,
+      0,
+      300_000,
+    );
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await project();
+        return;
+      } catch (error) {
+        const reason =
+          error instanceof Error ? error.message : "RELATION_PROJECTION_FAILED";
+        if (attempt === maxAttempts) {
+          await this.producer.publish(
+            RECOMMENDATION_RELATION_DLQ_TOPIC,
+            event.eventId,
+            {
+              eventVersion: 1,
+              eventId: `dlq:relations:${topic}:${event.eventId}`,
+              eventName: "recommendation.relation_projection_failed",
+              failedAt: new Date().toISOString(),
+              sourceTopic: topic,
+              reason: reason.slice(0, 500),
+              originalEvent: event,
+            },
+          );
+          this.logger.error(
+            `Relation event moved to DLQ: ${event.eventId} (${reason})`,
+          );
+          return;
+        }
+        this.logger.warn(
+          `Relation projection retry ${attempt}/${maxAttempts} for ${event.eventId}: ${reason}`,
+        );
+        const delayMs = getKafkaRetryDelayMs(
+          attempt,
+          baseDelayMs,
+          Math.max(baseDelayMs, maxDelayMs),
+        );
+        if (delayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  // Chặn giá trị env lỗi để retry không tạo busy-loop hoặc giữ process quá lâu.
+  private getPositiveConfig(
+    key: string,
+    fallback: number,
+    minimum: number,
+    maximum: number,
+  ): number {
+    const configured = Number(this.config.get<string>(key));
+    return Number.isFinite(configured)
+      ? Math.min(maximum, Math.max(minimum, Math.floor(configured)))
+      : fallback;
   }
 }

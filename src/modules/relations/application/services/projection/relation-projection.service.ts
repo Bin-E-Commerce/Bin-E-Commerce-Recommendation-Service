@@ -1,19 +1,18 @@
 import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import type { EntityManager } from "typeorm";
 import type { RecommendationInteractionRecordedEvent } from "@common/kafka/events/recommendation.events";
 import type { RecommendationPurchaseEvent } from "@common/kafka/events/recommendation.events";
 import {
   RelationRepository,
   type RelationType,
 } from "../../../infrastructure/repositories/relation.repository";
+import { RecommendationRuleService } from "../../../../profiles/application/services/rules/recommendation-rule.service";
 
 // Application policy cho co-view/co-cart/co-purchase; consumer chỉ parse event rồi ủy quyền logic tại đây.
 @Injectable()
 export class RelationProjectionService {
   constructor(
     private readonly repository: RelationRepository,
-    private readonly config: ConfigService,
+    private readonly rules: RecommendationRuleService,
   ) {}
 
   // Project interaction vào directed pairs bounded theo session/user window; duplicate event được ledger bỏ qua.
@@ -32,61 +31,79 @@ export class RelationProjectionService {
       type === "CO_VIEW"
         ? ["PRODUCT_VIEWED", "PRODUCT_CLICKED", "PRODUCT_IMPRESSED"]
         : ["PRODUCT_ADDED_TO_CART"];
-    const configuredWeight =
-      event.data.interactionType === "PRODUCT_CLICKED"
-        ? Number(this.config.get<string>("RELATION_CO_CLICK_WEIGHT", "2"))
-        : event.data.interactionType === "PRODUCT_IMPRESSED"
-          ? Number(
-              this.config.get<string>("RELATION_CO_IMPRESSION_WEIGHT", "0.05"),
-            )
-          : type === "CO_VIEW"
-            ? Number(this.config.get<string>("RELATION_CO_VIEW_WEIGHT", "1"))
-            : Number(this.config.get<string>("RELATION_CO_CART_WEIGHT", "3"));
-    const weight =
-      Number.isFinite(configuredWeight) && configuredWeight > 0
-        ? configuredWeight
-        : type === "CO_CART"
-          ? 3
-          : event.data.interactionType === "PRODUCT_IMPRESSED"
-            ? 0.05
-            : event.data.interactionType === "PRODUCT_CLICKED"
-              ? 2
-              : 1;
+    const weight = this.rules.getRelationWeight(
+      event.data.interactionType as
+        | "PRODUCT_VIEWED"
+        | "PRODUCT_CLICKED"
+        | "PRODUCT_IMPRESSED"
+        | "PRODUCT_ADDED_TO_CART",
+    );
     await this.repository.withProjection(
       event.eventId,
       type,
       async (manager) => {
-        const related = await this.repository.findRecentProductIds(
+        await this.repository.insertSignal(
+          {
+            eventId: event.eventId,
+            userId: event.data.userId,
+            sessionId: event.data.sessionId,
+            interactionType: event.data.interactionType,
+            productId,
+            occurredAt,
+          },
+          manager,
+        );
+        const relatedSignals = await this.repository.findRecentSignals(
           {
             userId: event.data.userId,
             sessionId: event.data.sessionId,
+            relationType: type,
             since: new Date(occurredAt.getTime() - windowMs),
-            until: occurredAt,
+            // Dùng event-time window đối xứng để event đến trễ vẫn ghép được với event đã xử lý trước.
+            // Ledger chống duplicate bảo đảm việc replay không cộng relation lần hai.
+            until: new Date(occurredAt.getTime() + windowMs),
             types,
             limit: type === "CO_VIEW" ? 20 : 50,
           },
           manager,
         );
-        const touchedSources = new Set<string>();
-        for (const target of related.filter((item) => item !== productId)) {
-          await this.addBothDirections(
+        const claimedRelatedSignals = [] as typeof relatedSignals;
+        for (const related of relatedSignals) {
+          if (related.productId === productId) continue;
+          if (
+            await this.repository.claimPair(
+              event.eventId,
+              related.eventId,
+              type,
+              manager,
+            )
+          ) {
+            claimedRelatedSignals.push(related);
+          }
+        }
+        const relatedProducts = claimedRelatedSignals.map(
+          (related) => related.productId,
+        );
+        const relations = claimedRelatedSignals.flatMap((related) =>
+          this.buildBothDirections(
             productId,
-            target,
+            related.productId,
             type,
             occurredAt,
             weight,
-            manager,
-          );
-          touchedSources.add(productId);
-          touchedSources.add(target);
+            related.occurredAt,
+          ),
+        );
+        // Không gọi persistence với batch rỗng; event đầu tiên trong window thường chưa có pair để ghi.
+        if (relations.length > 0) {
+          await this.repository.addRelations(relations, manager);
         }
-        for (const sourceProductId of touchedSources)
-          await this.repository.pruneSourceRelations(
-            sourceProductId,
-            type,
-            100,
-            manager,
-          );
+        await this.repository.pruneSourceRelationsBatch(
+          [productId, ...relatedProducts],
+          type,
+          100,
+          manager,
+        );
       },
     );
   }
@@ -98,13 +115,7 @@ export class RelationProjectionService {
       ...new Set(event.data.items.map((item) => item.productId)),
     ].slice(0, 50);
     const returned = event.eventName === "order.purchase.returned";
-    const configuredScore = Number(
-      this.config.get<string>("RELATION_CO_PURCHASE_WEIGHT", "6"),
-    );
-    const score =
-      Number.isFinite(configuredScore) && configuredScore > 0
-        ? configuredScore
-        : 6;
+    const scoreDelta = this.rules.getPurchaseRelationWeight(returned);
     const now = new Date(event.data.occurredAt);
     if (Number.isNaN(now.getTime()))
       throw new Error("INVALID_PURCHASE_OCCURRED_AT");
@@ -112,30 +123,28 @@ export class RelationProjectionService {
       event.eventId,
       type,
       async (manager) => {
-        for (const source of products)
-          for (const target of products)
-            if (source !== target)
-              await this.repository.addRelation(
-                {
-                  sourceProductId: source,
-                  targetProductId: target,
-                  relationType: type,
-                  positiveDelta: returned ? 0 : 1,
-                  negativeDelta: returned ? 1 : 0,
-                  scoreDelta: returned ? -score : score,
-                  signalAt: now,
-                  windowStart: now,
-                  windowEnd: now,
-                },
-                manager,
-              );
-        for (const source of products)
-          await this.repository.pruneSourceRelations(
-            source,
-            type,
-            100,
-            manager,
-          );
+        const relations = products.flatMap((source) =>
+          products
+            .filter((target) => target !== source)
+            .map((target) => ({
+              sourceProductId: source,
+              targetProductId: target,
+              relationType: type,
+              positiveDelta: returned ? 0 : 1,
+              negativeDelta: returned ? 1 : 0,
+              scoreDelta,
+              signalAt: now,
+              windowStart: now,
+              windowEnd: now,
+            })),
+        );
+        await this.repository.addRelations(relations, manager);
+        await this.repository.pruneSourceRelationsBatch(
+          products,
+          type,
+          100,
+          manager,
+        );
       },
     );
   }
@@ -150,20 +159,33 @@ export class RelationProjectionService {
     return null;
   }
 
-  // Ghi cả hai chiều để anchor A có thể gợi ý B và anchor B có thể gợi ý A.
-  private async addBothDirections(
+  // Tạo cả hai chiều để anchor A có thể gợi ý B và anchor B có thể gợi ý A.
+  // Persistence sẽ ghi toàn bộ batch trong một statement để tránh N+1 query.
+  private buildBothDirections(
     source: string,
     target: string,
     relationType: RelationType,
     signalAt: Date,
     weight: number,
-    manager: EntityManager,
-  ): Promise<void> {
+    relatedSignalAt?: Date,
+  ) {
+    const windowStart = new Date(
+      Math.min(
+        signalAt.getTime(),
+        relatedSignalAt?.getTime() ?? signalAt.getTime(),
+      ),
+    );
+    const windowEnd = new Date(
+      Math.max(
+        signalAt.getTime(),
+        relatedSignalAt?.getTime() ?? signalAt.getTime(),
+      ),
+    );
     const start = new Date(
-      signalAt.getTime() -
+      windowStart.getTime() -
         (relationType === "CO_VIEW" ? 30 * 60_000 : 7 * 24 * 60 * 60_000),
     );
-    await this.repository.addRelation(
+    return [
       {
         sourceProductId: source,
         targetProductId: target,
@@ -171,13 +193,10 @@ export class RelationProjectionService {
         positiveDelta: 1,
         negativeDelta: 0,
         scoreDelta: weight,
-        signalAt,
+        signalAt: windowEnd,
         windowStart: start,
-        windowEnd: signalAt,
+        windowEnd,
       },
-      manager,
-    );
-    await this.repository.addRelation(
       {
         sourceProductId: target,
         targetProductId: source,
@@ -185,11 +204,10 @@ export class RelationProjectionService {
         positiveDelta: 1,
         negativeDelta: 0,
         scoreDelta: weight,
-        signalAt,
+        signalAt: windowEnd,
         windowStart: start,
-        windowEnd: signalAt,
+        windowEnd,
       },
-      manager,
-    );
+    ];
   }
 }

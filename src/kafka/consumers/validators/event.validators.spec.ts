@@ -59,7 +59,33 @@ describe("event validators", () => {
     };
 
     // Act & Assert
-    expect(() => validateCatalogEvent(event)).toThrow("data.isInStock must be boolean");
+    expect(() => validateCatalogEvent(event)).toThrow(
+      "data.isInStock must be boolean",
+    );
+  });
+
+  it("should accept a minimal catalog delete event", () => {
+    // Arrange
+    const event = {
+      eventId: "catalog-delete-1",
+      eventName: "product.catalog.deleted",
+      eventVersion: 1,
+      source: "product-service",
+      aggregateId: "product-1",
+      occurredAt: "2026-09-06T10:00:00.000Z",
+      data: {
+        productId: "product-1",
+        catalogRevision: "3",
+      },
+    };
+
+    // Act
+    const result = validateCatalogEvent(event);
+
+    // Assert
+    expect(result.data.productId).toBe("product-1");
+    expect(result.data.status).toBe("DELETED");
+    expect(result.data.catalogRevision).toBe("3");
   });
 
   it("should reject a purchase event without items", () => {

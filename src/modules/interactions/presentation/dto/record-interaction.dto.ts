@@ -99,6 +99,6 @@ export class RecordInteractionDto {
   recommendationExperimentId?: string;
 
   @IsOptional()
-  @IsIn(["CONTROL", "HYBRID"])
-  recommendationExperimentVariant?: "CONTROL" | "HYBRID";
+  @IsIn(["CONTROL", "HYBRID", "ML_HYBRID"])
+  recommendationExperimentVariant?: "CONTROL" | "HYBRID" | "ML_HYBRID";
 }

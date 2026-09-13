@@ -1,6 +1,6 @@
 // Service này chuyển event thành profile signal; transaction và SQL persistence được ủy quyền cho repositories của Profiles domain.
 
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import type { EntityManager } from "typeorm";
 import { CatalogService } from "../../../../catalog/application/services/catalog/catalog.service";
 import type { RecommendationActorType } from "../../../../../database/profiles/entities/actor-profile.entity";
@@ -21,6 +21,8 @@ type ProfileActor = {
 // Application service điều phối profile, catalog context, popularity và cache invalidation nhưng không chứa truy vấn database.
 @Injectable()
 export class ProfileProjectionService {
+  private readonly logger = new Logger(ProfileProjectionService.name);
+
   constructor(
     private readonly projectionRepository: ProfileProjectionRepository,
     private readonly catalog: CatalogService,
@@ -32,13 +34,12 @@ export class ProfileProjectionService {
 
   // Project interaction một lần trong transaction, sau commit mới cập nhật Redis để cache không vượt qua durable state.
   async project(event: RecommendationInteractionRecordedEvent): Promise<void> {
-    const catalogProduct = event.data.productId
-      ? (await this.catalog.findByIds([event.data.productId]))[0]
-      : undefined;
+    const occurredAt = this.parseOccurredAt(event.occurredAt);
+    const catalogProduct = await this.findCatalogProduct(event.data.productId);
     const categoryId =
       event.data.categoryId ?? catalogProduct?.categoryId ?? null;
     const brandId = catalogProduct?.brandId ?? null;
-    const projected = await this.projectionRepository.transaction(
+    const projectionResult = await this.projectionRepository.transaction(
       async (manager) => {
         if (!event.data.userId && event.data.sessionId) {
           await this.projectionRepository.lockSessionMerge(
@@ -52,7 +53,11 @@ export class ProfileProjectionService {
             manager,
           ))
         ) {
-          return false;
+          return {
+            projected: false,
+            actorUserId: null,
+            shouldUpdateSessionContext: false,
+          };
         }
 
         const weight = this.rules.getInteractionWeight(
@@ -63,7 +68,7 @@ export class ProfileProjectionService {
           await this.projectionRepository.upsertActorProfile(
             actor.actorType,
             actor.actorId,
-            new Date(event.occurredAt),
+            occurredAt,
             manager,
           );
           await this.applyInteractionPreferences(
@@ -72,21 +77,34 @@ export class ProfileProjectionService {
             categoryId,
             brandId,
             weight,
+            occurredAt,
             manager,
           );
         }
 
         await this.popularity.applyInteraction(event, manager);
-        return true;
+        return {
+          projected: true,
+          // Event guest đến sau khi merge đã được chuyển sang USER trong transaction;
+          // trả actor này ra ngoài để invalidation không bỏ sót user cache.
+          actorUserId: actor?.actorType === "USER" ? actor.actorId : null,
+          // Guest event đến sau merge đã thuộc USER; không dựng lại session context đã bị xóa.
+          shouldUpdateSessionContext: actor?.actorType === "SESSION",
+        };
       },
     );
 
-    if (!projected) return;
-    await this.sessionContext.apply(event, categoryId, brandId);
+    if (!projectionResult.projected) return;
+    if (projectionResult.shouldUpdateSessionContext) {
+      await this.sessionContext.apply(event, categoryId, brandId);
+    }
+    const userIds = new Set(
+      [event.data.userId, projectionResult.actorUserId].filter(
+        (value): value is string => Boolean(value),
+      ),
+    );
     await Promise.all([
-      event.data.userId
-        ? this.redis.invalidateActor("user", event.data.userId)
-        : Promise.resolve(),
+      ...[...userIds].map((id) => this.redis.invalidateActor("user", id)),
       event.data.sessionId
         ? this.redis.invalidateActor("session", event.data.sessionId)
         : Promise.resolve(),
@@ -95,7 +113,8 @@ export class ProfileProjectionService {
 
   // Project purchase/return với weight mạnh hơn browsing và dùng cùng projection ledger để chống duplicate.
   async projectPurchase(event: OrderPurchaseEvent): Promise<void> {
-    const weight = event.eventName === "order.purchase.returned" ? -8 : 8;
+    const occurredAt = this.parseOccurredAt(event.data.occurredAt);
+    const weight = this.rules.getPurchaseWeight(event.eventName);
     const projected = await this.projectionRepository.transaction(
       async (manager) => {
         if (
@@ -110,7 +129,7 @@ export class ProfileProjectionService {
         await this.projectionRepository.upsertActorProfile(
           "USER",
           event.data.customerUserId,
-          new Date(event.data.occurredAt),
+          occurredAt,
           manager,
         );
         for (const item of event.data.items) {
@@ -121,7 +140,7 @@ export class ProfileProjectionService {
               dimension: "PRODUCT",
               dimensionKey: item.productId,
               score: weight * item.quantity,
-              occurredAt: new Date(event.data.occurredAt),
+              occurredAt,
             },
             manager,
           );
@@ -132,7 +151,7 @@ export class ProfileProjectionService {
               dimension: "CATEGORY",
               dimensionKey: item.categoryId,
               score: weight * item.quantity,
-              occurredAt: new Date(event.data.occurredAt),
+              occurredAt,
             },
             manager,
           );
@@ -146,6 +165,26 @@ export class ProfileProjectionService {
     if (projected) {
       await this.redis.invalidateActor("user", event.data.customerUserId);
     }
+  }
+
+  // Catalog chỉ bổ sung category/brand; nếu read model chậm thì vẫn giữ interaction product/query đã nhận.
+  private async findCatalogProduct(productId: string | null) {
+    if (!productId) return undefined;
+    try {
+      return (await this.catalog.findByIds([productId]))[0];
+    } catch (error) {
+      this.logger.warn(
+        `Catalog metadata unavailable for ${productId}: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+      return undefined;
+    }
+  }
+
+  // Chặn Date Invalid trước transaction để dữ liệu hỏng đi retry/DLQ thay vì làm sai profile chronology.
+  private parseOccurredAt(value: string): Date {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw new Error("INVALID_OCCURRED_AT");
+    return date;
   }
 
   // Chọn đúng một actor: user đã đăng nhập ưu tiên USER, guest mới dùng SESSION để tránh merge cộng trùng tín hiệu.
@@ -183,6 +222,7 @@ export class ProfileProjectionService {
     categoryId: string | null,
     brandId: string | null,
     weight: number,
+    occurredAt: Date,
     manager: EntityManager,
   ): Promise<void> {
     const preferences: Array<{
@@ -206,7 +246,7 @@ export class ProfileProjectionService {
           dimension: preference.dimension,
           dimensionKey: preference.dimensionKey,
           score: weight,
-          occurredAt: new Date(event.occurredAt),
+          occurredAt,
         },
         manager,
       );

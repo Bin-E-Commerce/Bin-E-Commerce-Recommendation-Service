@@ -40,9 +40,18 @@ export class PopularityService {
     manager?: import("typeorm").EntityManager,
   ): Promise<void> {
     const isReturn = event.eventName === "order.purchase.returned";
+    const occurredAt = new Date(event.data.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) {
+      throw new Error("INVALID_PURCHASE_OCCURRED_AT");
+    }
     for (const item of event.data.items) {
       await this.repository.incrementPurchase(
-        { productId: item.productId, quantity: item.quantity, isReturn },
+        {
+          productId: item.productId,
+          quantity: item.quantity,
+          isReturn,
+          occurredAt,
+        },
         manager,
       );
     }

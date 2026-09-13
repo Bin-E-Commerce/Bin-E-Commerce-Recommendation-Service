@@ -2,6 +2,7 @@
 
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { createHash } from "node:crypto";
 import { KafkaProducerService } from "../../producers/kafka-producer.service";
 import { MetricsService } from "../../../modules/health/metrics.service";
 import {
@@ -131,15 +132,21 @@ export class KafkaEventProcessor {
     const eventId =
       typeof payload === "object" && payload !== null && "eventId" in payload
         ? String((payload as { eventId?: unknown }).eventId ?? "unknown")
-        : "unknown";
+        : `raw-${createHash("sha256")
+            .update(
+              typeof payload === "string" ? payload : JSON.stringify(payload),
+            )
+            .digest("hex")
+            .slice(0, 32)}`;
 
     await this.producer.publish(dlqTopic, eventId, {
       eventVersion: 1,
-      eventId: "dlq:" + sourceTopic + ":" + eventId + ":" + Date.now(),
+      // DLQ eventId ổn định để retry sau commit failure không tạo nhiều bản ghi audit cho cùng một source event.
+      eventId: "dlq:" + sourceTopic + ":" + eventId,
       eventName: "recommendation.processing.failed",
       failedAt: new Date().toISOString(),
       sourceTopic,
-      reason,
+      reason: reason.slice(0, 500),
       originalEvent: payload,
     });
     this.logger.error(

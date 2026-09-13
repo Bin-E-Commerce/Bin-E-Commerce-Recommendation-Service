@@ -40,6 +40,33 @@ function requireIsoDate(value: unknown, field: string): string {
   return date;
 }
 
+// Chuẩn hóa revision về chuỗi bigint hợp lệ để PostgreSQL không nhận poison event quá dài hoặc vượt giới hạn BIGINT.
+function requireCatalogRevision(value: unknown): string {
+  const revision =
+    typeof value === "number" && Number.isSafeInteger(value)
+      ? String(value)
+      : value;
+  if (typeof revision !== "string" || !/^\d{1,19}$/.test(revision)) {
+    throw new InvalidKafkaEventError(
+      "data.catalogRevision must be a positive numeric string",
+    );
+  }
+  try {
+    const numericRevision = BigInt(revision);
+    if (numericRevision < 1n || numericRevision > 9223372036854775807n) {
+      throw new InvalidKafkaEventError(
+        "data.catalogRevision is outside PostgreSQL BIGINT range",
+      );
+    }
+  } catch (error) {
+    if (error instanceof InvalidKafkaEventError) throw error;
+    throw new InvalidKafkaEventError(
+      "data.catalogRevision must be a positive numeric string",
+    );
+  }
+  return revision;
+}
+
 // Kiểm tra envelope chung và ngày ISO của integration event.
 function requireEnvelope(
   input: unknown,
@@ -77,7 +104,17 @@ export function validateCatalogEvent(
   const data = event.data as Record<string, unknown>;
   requireString(data.productId, "data.productId", 128);
   // Delete event chỉ cần identity/version/status; không bắt producer gửi lại snapshot đã bị xóa.
-  if (event.eventName !== "product.catalog.deleted") {
+  const isDeletedEvent = event.eventName === "product.catalog.deleted";
+  if (isDeletedEvent) {
+    const catalogVersion = requireCatalogRevision(
+      data.catalogRevision ?? data.catalogVersion,
+    );
+    data.catalogRevision = catalogVersion;
+    data.catalogVersion = catalogVersion;
+    data.status = "DELETED";
+    return event as unknown as RecommendationCatalogEvent;
+  }
+  if (!isDeletedEvent) {
     requireString(data.name, "data.name", 500);
     requireString(data.slug, "data.slug", 620);
   }
@@ -96,20 +133,9 @@ export function validateCatalogEvent(
   if (typeof data.isInStock !== "boolean") {
     throw new InvalidKafkaEventError("data.isInStock must be boolean");
   }
-  const rawRevision = data.catalogRevision ?? data.catalogVersion;
-  const catalogVersion =
-    typeof rawRevision === "number" && Number.isInteger(rawRevision)
-      ? String(rawRevision)
-      : rawRevision;
-  if (
-    typeof catalogVersion !== "string" ||
-    !/^\d+$/.test(catalogVersion) ||
-    BigInt(catalogVersion) < 1n
-  ) {
-    throw new InvalidKafkaEventError(
-      "data.catalogVersion must be a positive numeric string",
-    );
-  }
+  const catalogVersion = requireCatalogRevision(
+    data.catalogRevision ?? data.catalogVersion,
+  );
   // Cho phép replay event Phase 2 cũ; snapshot fallback chỉ dùng title nên vẫn deterministic và sẽ được re-embed khi event mới đến.
   if (!data.semanticContent || typeof data.semanticContent !== "object") {
     data.semanticContent = {

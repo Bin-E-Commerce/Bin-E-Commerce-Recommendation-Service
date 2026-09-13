@@ -9,9 +9,18 @@ import {
 } from "typeorm";
 
 @Entity("recommendation_interactions")
-@Index("idx_recommendation_interactions_user_occurred", ["userId", "occurredAt"])
-@Index("idx_recommendation_interactions_session_occurred", ["sessionId", "occurredAt"])
-@Index("idx_recommendation_interactions_product_occurred", ["productId", "occurredAt"])
+@Index("idx_recommendation_interactions_user_occurred", [
+  "userId",
+  "occurredAt",
+])
+@Index("idx_recommendation_interactions_session_occurred", [
+  "sessionId",
+  "occurredAt",
+])
+@Index("idx_recommendation_interactions_product_occurred", [
+  "productId",
+  "occurredAt",
+])
 export class RecommendationInteractionEntity {
   // Khóa nội bộ của read model, chỉ phục vụ quan hệ và thao tác persistence trong Recommendation Service.
   @PrimaryGeneratedColumn("uuid")
@@ -82,15 +91,30 @@ export class RecommendationInteractionEntity {
   requestId!: string | null;
 
   // ID của lần recommendation đã sinh ra card này; dùng để đo hiệu quả của từng result set.
-  @Column({ name: "recommendation_request_id", type: "varchar", length: 128, nullable: true })
+  @Column({
+    name: "recommendation_request_id",
+    type: "varchar",
+    length: 128,
+    nullable: true,
+  })
   recommendationRequestId!: string | null;
 
   // ID item trong recommendation result; thường gắn với product để theo dõi impression → click → cart.
-  @Column({ name: "recommendation_item_id", type: "varchar", length: 128, nullable: true })
+  @Column({
+    name: "recommendation_item_id",
+    type: "varchar",
+    length: 128,
+    nullable: true,
+  })
   recommendationItemId!: string | null;
 
   // Nguồn candidate đã tạo ra item, ví dụ category affinity, trending hoặc explore.
-  @Column({ name: "recommendation_source", type: "varchar", length: 80, nullable: true })
+  @Column({
+    name: "recommendation_source",
+    type: "varchar",
+    length: 80,
+    nullable: true,
+  })
   recommendationSource!: string | null;
 
   // Thứ hạng item lúc hiển thị; giúp đánh giá vị trí nào tạo ra click hoặc conversion tốt hơn.
@@ -102,23 +126,43 @@ export class RecommendationInteractionEntity {
   surface!: string | null;
 
   // Version policy đã tạo recommendation; dùng để phân tách metrics giữa control và hybrid.
-  @Column({ name: "recommendation_policy_version", type: "varchar", length: 64, nullable: true })
+  @Column({
+    name: "recommendation_policy_version",
+    type: "varchar",
+    length: 64,
+    nullable: true,
+  })
   recommendationPolicyVersion!: string | null;
 
   // ID experiment deterministic; nullable vì interaction ngoài recommendation không có experiment.
-  @Column({ name: "recommendation_experiment_id", type: "varchar", length: 128, nullable: true })
+  @Column({
+    name: "recommendation_experiment_id",
+    type: "varchar",
+    length: 128,
+    nullable: true,
+  })
   recommendationExperimentId!: string | null;
 
-  // Variant actor đã nhận; chỉ nhận CONTROL hoặc HYBRID từ validator trước persistence.
-  @Column({ name: "recommendation_experiment_variant", type: "varchar", length: 16, nullable: true })
-  recommendationExperimentVariant!: "CONTROL" | "HYBRID" | null;
+  // Variant attribution lưu cả CONTROL legacy để phân tích lịch sử; request mới chỉ được gán HYBRID/ML_HYBRID.
+  @Column({
+    name: "recommendation_experiment_variant",
+    type: "varchar",
+    length: 16,
+    nullable: true,
+  })
+  recommendationExperimentVariant!: "CONTROL" | "HYBRID" | "ML_HYBRID" | null;
 
   // Metadata trace tối thiểu; không dùng để thay thế các cột truy vấn chính và không chứa token/PII nhạy cảm.
   @Column({ type: "jsonb", default: {} })
   metadata!: Record<string, string>;
 
   // Trạng thái xử lý persistence; PROCESSED là mặc định, FAILED dành cho cơ chế audit/recovery nếu mở rộng sau này.
-  @Column({ name: "processing_status", type: "varchar", length: 32, default: "PROCESSED" })
+  @Column({
+    name: "processing_status",
+    type: "varchar",
+    length: 32,
+    default: "PROCESSED",
+  })
   processingStatus!: "PROCESSED" | "FAILED";
 
   // Lý do xử lý thất bại, nullable vì event thành công không cần lưu error detail.

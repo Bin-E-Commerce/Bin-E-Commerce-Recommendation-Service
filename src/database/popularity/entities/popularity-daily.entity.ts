@@ -22,4 +22,10 @@ export class RecommendationPopularityDailyEntity {
 
   @Column({ name: "purchases", type: "integer", default: 0 })
   purchases: number;
+
+  @Column({ name: "purchase_completed", type: "integer", default: 0 })
+  purchaseCompleted: number;
+
+  @Column({ name: "purchase_returned", type: "integer", default: 0 })
+  purchaseReturned: number;
 }

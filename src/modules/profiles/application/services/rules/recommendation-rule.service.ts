@@ -12,14 +12,31 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
   PRODUCT_REMOVED_FROM_CART: -2,
 };
 
-export interface RecommendationRankingWeights {
-  profileAffinity: number;
-  sessionContext: number;
-  popularity: number;
-  freshness: number;
-  quality: number;
-  exploration: number;
-}
+const DEFAULT_PURCHASE_WEIGHTS = {
+  completed: 8,
+  returned: -8,
+} as const;
+
+const RELATION_WEIGHT_CONFIG_KEYS = {
+  PRODUCT_VIEWED: "RECOMMENDATION_RELATION_CO_VIEW_WEIGHT",
+  PRODUCT_CLICKED: "RECOMMENDATION_RELATION_CO_CLICK_WEIGHT",
+  PRODUCT_IMPRESSED: "RECOMMENDATION_RELATION_CO_IMPRESSION_WEIGHT",
+  PRODUCT_ADDED_TO_CART: "RECOMMENDATION_RELATION_CO_CART_WEIGHT",
+} as const;
+
+const LEGACY_RELATION_WEIGHT_CONFIG_KEYS = {
+  PRODUCT_VIEWED: "RELATION_CO_VIEW_WEIGHT",
+  PRODUCT_CLICKED: "RELATION_CO_CLICK_WEIGHT",
+  PRODUCT_IMPRESSED: "RELATION_CO_IMPRESSION_WEIGHT",
+  PRODUCT_ADDED_TO_CART: "RELATION_CO_CART_WEIGHT",
+} as const;
+
+const DEFAULT_RELATION_WEIGHTS = {
+  PRODUCT_VIEWED: 1,
+  PRODUCT_CLICKED: 2,
+  PRODUCT_IMPRESSED: 0.05,
+  PRODUCT_ADDED_TO_CART: 3,
+} as const;
 
 export interface HybridRankingWeights {
   profileAffinity: number;
@@ -32,14 +49,12 @@ export interface HybridRankingWeights {
   exploration: number;
 }
 
-const DEFAULT_RANKING_WEIGHTS: RecommendationRankingWeights = {
-  profileAffinity: 0.35,
-  sessionContext: 0.2,
-  popularity: 0.15,
-  freshness: 0.1,
-  quality: 0.1,
-  exploration: 0.1,
-};
+export interface RuntimeRecommendationPolicy {
+  version: string;
+  hybridWeights?: Partial<HybridRankingWeights>;
+  mlEnabled?: boolean;
+  mlBlend?: number;
+}
 
 const DEFAULT_HYBRID_RANKING_WEIGHTS: HybridRankingWeights = {
   profileAffinity: 0.25,
@@ -54,19 +69,60 @@ const DEFAULT_HYBRID_RANKING_WEIGHTS: HybridRankingWeights = {
 
 @Injectable()
 export class RecommendationRuleService {
+  private runtimePolicy: RuntimeRecommendationPolicy | null = null;
+
   constructor(private readonly config: ConfigService) {}
+
+  // Cập nhật policy đã được admin validate; runtime override giúp thay đổi ranking mà không cần restart service.
+  setRuntimePolicy(policy: RuntimeRecommendationPolicy | null): void {
+    this.runtimePolicy = policy;
+  }
 
   // Trả weight ổn định cho projection; config sai hoặc thiếu sẽ dùng default an toàn.
   getInteractionWeight(interactionType: string): number {
-    const configured = this.config.get<string>(
+    return this.readSignalWeight(
       `RECOMMENDATION_WEIGHT_${interactionType}`,
+      DEFAULT_WEIGHTS[interactionType] ?? 0,
     );
-    const defaultWeight = DEFAULT_WEIGHTS[interactionType] ?? 0;
-    const weight =
-      configured === undefined ? defaultWeight : Number(configured);
-    const hasExpectedSign =
-      defaultWeight === 0 || Math.sign(weight) === Math.sign(defaultWeight);
-    return Number.isFinite(weight) && hasExpectedSign ? weight : defaultWeight;
+  }
+
+  // Purchase/return có policy riêng vì đây là order event, không phải interaction type từ browser.
+  getPurchaseWeight(
+    eventName: "order.purchase.completed" | "order.purchase.returned",
+  ): number {
+    return this.readSignalWeight(
+      eventName === "order.purchase.completed"
+        ? "RECOMMENDATION_WEIGHT_PURCHASE_COMPLETED"
+        : "RECOMMENDATION_WEIGHT_PURCHASE_RETURNED",
+      eventName === "order.purchase.completed"
+        ? DEFAULT_PURCHASE_WEIGHTS.completed
+        : DEFAULT_PURCHASE_WEIGHTS.returned,
+    );
+  }
+
+  // Relation score dùng cùng policy weight nhưng có namespace riêng để thay đổi co-behavior không ảnh hưởng profile.
+  getRelationWeight(
+    interactionType:
+      | "PRODUCT_VIEWED"
+      | "PRODUCT_CLICKED"
+      | "PRODUCT_IMPRESSED"
+      | "PRODUCT_ADDED_TO_CART",
+  ): number {
+    return this.readSignalWeight(
+      RELATION_WEIGHT_CONFIG_KEYS[interactionType],
+      DEFAULT_RELATION_WEIGHTS[interactionType],
+      LEGACY_RELATION_WEIGHT_CONFIG_KEYS[interactionType],
+    );
+  }
+
+  // Purchase relation là positive khi completed và negative correction khi return/refund.
+  getPurchaseRelationWeight(returned: boolean): number {
+    const weight = this.readSignalWeight(
+      "RECOMMENDATION_RELATION_CO_PURCHASE_WEIGHT",
+      6,
+      "RELATION_CO_PURCHASE_WEIGHT",
+    );
+    return returned ? -weight : weight;
   }
 
   // Half-life dài hạn của profile được giới hạn dương để tránh decay sai hoặc score vô hạn.
@@ -79,47 +135,16 @@ export class RecommendationRuleService {
 
   // Rule version đi cùng response/cache giúp phân biệt kết quả sinh bởi policy nào khi deploy thay đổi trọng số.
   getRuleVersion(): string {
+    if (this.runtimePolicy?.version) return this.runtimePolicy.version;
     return this.config.get<string>(
       "RECOMMENDATION_RULE_VERSION",
-      "control-ranking-v2",
+      "standard-ranking-v1",
     );
   }
 
-  // Đọc trọng số ranking từ config và normalize về tổng 1 để thay policy không cần sửa business logic.
-  getRankingWeights(): RecommendationRankingWeights {
-    const values = Object.fromEntries(
-      Object.entries(DEFAULT_RANKING_WEIGHTS).map(([name, defaultValue]) => {
-        const configName = name
-          .replace(/[A-Z]/g, (letter) => `_${letter}`)
-          .toUpperCase();
-        const configured = Number(
-          this.config.get<string>(
-            `RECOMMENDATION_RANKING_WEIGHT_${configName}`,
-            String(defaultValue),
-          ),
-        );
-        return [
-          name,
-          Number.isFinite(configured) && configured >= 0
-            ? configured
-            : defaultValue,
-        ];
-      }),
-    ) as RecommendationRankingWeights;
-    const total = Object.values(values).reduce((sum, value) => sum + value, 0);
-    if (total <= 0) return DEFAULT_RANKING_WEIGHTS;
-    return {
-      profileAffinity: values.profileAffinity / total,
-      sessionContext: values.sessionContext / total,
-      popularity: values.popularity / total,
-      freshness: values.freshness / total,
-      quality: values.quality / total,
-      exploration: values.exploration / total,
-    };
-  }
-
-  // Đọc policy Phase 4 từ config và normalize tổng weight về 1 để thay đổi trọng số không cần sửa business logic.
+  // Đọc trọng số Standard Ranking và normalize tổng về 1 để policy đổi mà không sửa business logic.
   getHybridRankingWeights(): HybridRankingWeights {
+    const configuredWeights = this.runtimePolicy?.hybridWeights;
     const values = Object.fromEntries(
       Object.entries(DEFAULT_HYBRID_RANKING_WEIGHTS).map(
         ([name, defaultValue]) => {
@@ -127,10 +152,11 @@ export class RecommendationRuleService {
             .replace(/[A-Z]/g, (letter) => `_${letter}`)
             .toUpperCase();
           const configured = Number(
-            this.config.get<string>(
-              `RECOMMENDATION_HYBRID_RANKING_WEIGHT_${configName}`,
-              String(defaultValue),
-            ),
+            configuredWeights?.[name as keyof HybridRankingWeights] ??
+              this.config.get<string>(
+                `RECOMMENDATION_HYBRID_RANKING_WEIGHT_${configName}`,
+                String(defaultValue),
+              ),
           );
           return [
             name,
@@ -144,25 +170,58 @@ export class RecommendationRuleService {
     const total = Object.values(values).reduce((sum, value) => sum + value, 0);
     if (total <= 0) return DEFAULT_HYBRID_RANKING_WEIGHTS;
     return Object.fromEntries(
-      Object.entries(values).map(([name, value]) => [name, value / total]),
+      Object.entries(values).map(([name, value]) => [
+        name,
+        Number((value / total).toFixed(8)),
+      ]),
     ) as unknown as HybridRankingWeights;
   }
 
-  // Kiểm tra feature flag ở một nơi duy nhất để control ranking luôn có đường fallback rõ ràng.
-  isHybridRankingEnabled(): boolean {
-    return (
-      this.config.get<string>("RANKING_PIPELINE_V4_ENABLED", "false") ===
-        "true" &&
-      this.config.get<string>("HYBRID_RANKING_ENABLED", "false") === "true"
+  // Trả version policy Standard để cache tách biệt với kết quả có AI blend.
+  getHybridPolicyVersion(): string {
+    if (this.runtimePolicy?.version) return this.runtimePolicy.version;
+    return this.config.get<string>(
+      "RECOMMENDATION_RANKING_POLICY_VERSION",
+      "standard-ranking-v1",
     );
   }
 
-  // Trả version policy để cache và analytics không trộn kết quả giữa control và hybrid.
-  getHybridPolicyVersion(): string {
-    return this.config.get<string>(
-      "RECOMMENDATION_RANKING_POLICY_VERSION",
-      "hybrid-ranking-v1",
+  // AI là lớp blend tùy chọn; Standard vẫn chạy độc lập khi AI tắt hoặc provider lỗi.
+  isMlRankingEnabled(): boolean {
+    if (this.runtimePolicy?.mlEnabled !== undefined) {
+      return this.runtimePolicy.mlEnabled;
+    }
+    return this.config.get<string>("ML_RANKING_ENABLED", "false") === "true";
+  }
+
+  // Giới hạn ML blend tối đa 50% để model mới không thể đột ngột thay toàn bộ behavior đã kiểm chứng.
+  getMlRankingBlend(): number {
+    const value = Number(
+      this.runtimePolicy?.mlBlend ??
+        this.config.get<string>("ML_RANKING_BLEND", "0.3"),
     );
+    return Number.isFinite(value) ? Math.min(0.5, Math.max(0, value)) : 0.3;
+  }
+
+  // Version model/policy đi vào cache key để đổi artifact không phục vụ nhầm kết quả cũ.
+  getMlRankingPolicyVersion(): string {
+    if (this.runtimePolicy?.version) return this.runtimePolicy.version;
+    return this.config.get<string>("ML_RANKING_POLICY_VERSION", "ml-hybrid-v1");
+  }
+
+  // Trả snapshot đã normalize để admin trace hiển thị đúng công thức thật đang chạy.
+  getPolicySnapshot(): {
+    version: string;
+    hybridWeights: HybridRankingWeights;
+    mlEnabled: boolean;
+    mlBlend: number;
+  } {
+    return {
+      version: this.getRuleVersion(),
+      hybridWeights: this.getHybridRankingWeights(),
+      mlEnabled: this.isMlRankingEnabled(),
+      mlBlend: this.getMlRankingBlend(),
+    };
   }
 
   // Relation scale cấu hình được để purchase/cart/view có ảnh hưởng khác nhau mà không hard-code trong ranker.
@@ -187,5 +246,24 @@ export class RecommendationRuleService {
     return surface === "product_detail"
       ? { category: 2, brand: 2, shop: 3, windowSize: 6 }
       : { category: 4, brand: 3, shop: 5, windowSize: 24 };
+  }
+
+  // Đọc một signal weight và giữ đúng dấu nghiệp vụ để config sai không biến return thành positive signal.
+  private readSignalWeight(
+    configKey: string,
+    defaultWeight: number,
+    legacyConfigKey?: string,
+  ): number {
+    const configured =
+      this.config.get<string>(configKey) ??
+      (legacyConfigKey ? this.config.get<string>(legacyConfigKey) : undefined);
+    const weight =
+      configured === undefined ? defaultWeight : Number(configured);
+    // Zero cho phép tắt một signal; chỉ cấm đảo dấu positive thành negative hoặc ngược lại.
+    const hasExpectedSign =
+      weight === 0 ||
+      defaultWeight === 0 ||
+      Math.sign(weight) === Math.sign(defaultWeight);
+    return Number.isFinite(weight) && hasExpectedSign ? weight : defaultWeight;
   }
 }

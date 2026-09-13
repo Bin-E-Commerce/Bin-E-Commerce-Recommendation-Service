@@ -17,31 +17,44 @@ export class ProfileQueryService {
     private readonly rules: RecommendationRuleService,
   ) {}
 
-  // Lấy top preference theo dimension để candidate engine không cần biết schema database.
+  // Lấy top positive và negative preference riêng theo dimension để return/refund mạnh
+  // không đẩy hết tín hiệu tích cực ra khỏi feature set của ranker.
   async getTop(
     actorType: "USER" | "SESSION",
     actorId: string,
     dimension: string,
     limit = 12,
   ): Promise<PreferenceValue[]> {
+    const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 50);
     const values = await this.repository.findTop(
       actorType,
       actorId,
       dimension,
-      Math.max(limit * 5, 50),
+      Math.max(safeLimit * 5, 50),
     );
     const now = Date.now();
     const halfLife = this.rules.getProfileHalfLifeDays();
-    return values
-      .sort((left, right) => {
-        const leftScore = Math.abs(this.effectiveScore(left, now, halfLife));
-        const rightScore = Math.abs(this.effectiveScore(right, now, halfLife));
-        return (
-          rightScore - leftScore ||
-          right.lastSignalAt.getTime() - left.lastSignalAt.getTime()
-        );
-      })
-      .slice(0, limit);
+    const sortByEffectiveMagnitude = (
+      left: PreferenceValue,
+      right: PreferenceValue,
+    ): number => {
+      const leftScore = Math.abs(this.effectiveScore(left, now, halfLife));
+      const rightScore = Math.abs(this.effectiveScore(right, now, halfLife));
+      return (
+        rightScore - leftScore ||
+        right.lastSignalAt.getTime() - left.lastSignalAt.getTime() ||
+        left.dimensionKey.localeCompare(right.dimensionKey)
+      );
+    };
+    const positive = values
+      .filter((value) => this.effectiveScore(value, now, halfLife) > 0)
+      .sort(sortByEffectiveMagnitude)
+      .slice(0, safeLimit);
+    const negative = values
+      .filter((value) => this.effectiveScore(value, now, halfLife) < 0)
+      .sort(sortByEffectiveMagnitude)
+      .slice(0, safeLimit);
+    return [...positive, ...negative];
   }
 
   // Sort theo score sau decay và giữ negative signal mạnh để ranker không bị preference cũ lấn át.

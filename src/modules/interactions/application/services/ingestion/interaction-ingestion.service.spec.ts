@@ -158,4 +158,39 @@ describe("InteractionIngestionService", () => {
     ).rejects.toThrow("Invalid recommendation attribution");
     expect(kafkaProducer.publish).not.toHaveBeenCalled();
   });
+
+  // Batch impression phải tạo đủ event trước khi gọi một lần publishBatch để không phát nửa chừng khi payload lỗi.
+  it("publishes multiple interactions in one Kafka batch", async () => {
+    // Arrange
+    const kafkaProducer = {
+      publish: jest.fn(),
+      publishBatch: jest.fn().mockResolvedValue(undefined),
+    };
+    const trackingToken = { verify: jest.fn() };
+    const service = new InteractionIngestionService(
+      kafkaProducer as never,
+      trackingToken as never,
+    );
+    const request = {
+      headers: {
+        "x-user-id": "user-1",
+        "x-session-id": "session-1",
+      },
+    } as unknown as Request;
+
+    // Act
+    const result = await service.recordMany(
+      [
+        { interactionType: "PRODUCT_IMPRESSED", productId: "product-1" },
+        { interactionType: "PRODUCT_IMPRESSED", productId: "product-2" },
+      ],
+      request,
+    );
+
+    // Assert
+    expect(result.eventIds).toHaveLength(2);
+    expect(kafkaProducer.publish).not.toHaveBeenCalled();
+    expect(kafkaProducer.publishBatch).toHaveBeenCalledTimes(1);
+    expect(kafkaProducer.publishBatch.mock.calls[0][1]).toHaveLength(2);
+  });
 });

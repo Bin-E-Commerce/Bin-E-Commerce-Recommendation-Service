@@ -1,4 +1,5 @@
-// Application service này tạo envelope từ request đã qua Gateway, không cho client tự giả mạo userId.
+// Application service này tạo envelope từ request đã qua Gateway, xác thực attribution và đưa event vào Kafka.
+// Service không tự lưu database; consumer chịu trách nhiệm persistence và projection bất đồng bộ.
 
 import {
   BadRequestException,
@@ -25,7 +26,13 @@ type RecommendationAttribution = {
   surface: RecommendationTrackingTokenInput["surface"] | null;
   recommendationPolicyVersion: string | null;
   recommendationExperimentId: string | null;
-  recommendationExperimentVariant: "CONTROL" | "HYBRID" | null;
+  recommendationExperimentVariant: "CONTROL" | "HYBRID" | "ML_HYBRID" | null;
+};
+
+type TrustedActor = {
+  userId: string | null;
+  sessionId: string | null;
+  actorId: string;
 };
 
 @Injectable()
@@ -36,11 +43,60 @@ export class InteractionIngestionService {
     private readonly trackingToken: RecommendationTrackingTokenService,
   ) {}
 
-  // Tạo event accepted với actor từ trusted Gateway headers và trả eventId để trace request.
+  // Tạo một event accepted với actor từ trusted Gateway headers và trả eventId để client có thể đối chiếu.
   async record(
     dto: RecordInteractionDto,
     request: Request,
   ): Promise<{ eventId: string }> {
+    const actor = this.getActor(request);
+    const event = this.createEvent(dto, request, actor);
+
+    try {
+      await this.kafkaProducer.publish(
+        RECOMMENDATION_INTERACTIONS_TOPIC,
+        actor.actorId,
+        event,
+      );
+    } catch {
+      throw new ServiceUnavailableException(
+        "Recommendation event queue is temporarily unavailable",
+      );
+    }
+
+    return { eventId: event.eventId };
+  }
+
+  // Tạo toàn bộ envelope trước khi publish để nếu một event invalid thì không phát một phần batch.
+  // Một Kafka request được dùng cho cả batch, giảm network round-trip khi người dùng scroll qua nhiều card.
+  async recordMany(
+    dtos: RecordInteractionDto[],
+    request: Request,
+  ): Promise<{ eventIds: string[] }> {
+    if (dtos.length === 0 || dtos.length > 50) {
+      throw new BadRequestException(
+        "Interaction batch must contain 1-50 events",
+      );
+    }
+
+    const actor = this.getActor(request);
+    const events = dtos.map((dto) => this.createEvent(dto, request, actor));
+
+    try {
+      await this.kafkaProducer.publishBatch(
+        RECOMMENDATION_INTERACTIONS_TOPIC,
+        events.map((event) => ({ key: actor.actorId, payload: event })),
+      );
+    } catch {
+      throw new ServiceUnavailableException(
+        "Recommendation event queue is temporarily unavailable",
+      );
+    }
+
+    return { eventIds: events.map((event) => event.eventId) };
+  }
+
+  // Lấy identity từ trusted headers một lần cho cả request; client không được truyền userId trong body.
+  private getActor(request: Request): TrustedActor {
     const userId = this.getHeader(request, "x-user-id");
     const sessionId = this.getHeader(request, "x-session-id");
     const actorId = userId ?? sessionId;
@@ -51,20 +107,34 @@ export class InteractionIngestionService {
       );
     }
 
-    const attribution = this.validateRecommendationAttribution(dto, actorId);
+    return { userId, sessionId, actorId };
+  }
+
+  // Chuẩn hóa DTO thành envelope Kafka; server tự cấp eventId và occurredAt để bảo vệ thứ tự, decay và deduplication.
+  private createEvent(
+    dto: RecordInteractionDto,
+    request: Request,
+    actor: TrustedActor,
+  ) {
+    const attribution = this.validateRecommendationAttribution(
+      dto,
+      actor.actorId,
+    );
     const eventId = randomUUID();
-    const event = {
+
+    // Timestamp của server là nguồn tin cậy; không dùng thời gian từ browser để client không làm sai profile hoặc relation window.
+    return {
       eventId,
       eventName: RecommendationEvents.INTERACTION_RECORDED,
       eventVersion: 1,
       source: "api-gateway",
-      occurredAt: dto.occurredAt ?? new Date().toISOString(),
-      aggregateId: actorId,
-      metadata: this.getMetadata(request, userId),
+      occurredAt: new Date().toISOString(),
+      aggregateId: actor.actorId,
+      metadata: this.getMetadata(request, actor.userId),
       data: {
         interactionType: dto.interactionType as RecommendationInteractionType,
-        userId,
-        sessionId,
+        userId: actor.userId,
+        sessionId: actor.sessionId,
         productId: dto.productId?.trim() || null,
         variantId: dto.variantId?.trim() || null,
         categoryId: dto.categoryId?.trim() || null,
@@ -84,23 +154,9 @@ export class InteractionIngestionService {
           attribution.recommendationExperimentVariant,
       },
     };
-
-    try {
-      await this.kafkaProducer.publish(
-        RECOMMENDATION_INTERACTIONS_TOPIC,
-        actorId,
-        event,
-      );
-    } catch {
-      throw new ServiceUnavailableException(
-        "Recommendation event queue is temporarily unavailable",
-      );
-    }
-
-    return { eventId };
   }
 
-  // Chỉ lấy header scalar và bỏ qua array để tránh tạo event không xác định.
+  // Chỉ lấy header scalar và bỏ qua array để tránh tạo event không xác định từ request giả mạo.
   private getHeader(request: Request, name: string): string | null {
     const value = request.headers[name];
     return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -201,7 +257,7 @@ export class InteractionIngestionService {
     };
   }
 
-  // Metadata chỉ phục vụ trace; không forward toàn bộ headers hoặc dữ liệu nhạy cảm vào Kafka.
+  // Metadata chỉ phục vụ correlation; không forward toàn bộ headers hoặc dữ liệu nhạy cảm vào Kafka.
   private getMetadata(request: Request, userId: string | null) {
     const correlationId = this.getHeader(request, "x-request-id");
     const metadata: { correlationId?: string; actorUserId?: string } = {};

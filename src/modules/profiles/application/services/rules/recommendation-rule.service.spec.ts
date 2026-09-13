@@ -48,6 +48,30 @@ describe("RecommendationRuleService", () => {
     expect(halfLifeDays).toBe(7);
   });
 
+  it("should keep purchase and return weights configurable with their expected signs", () => {
+    // Arrange
+    const config = {
+      get: jest.fn(
+        (key: string, fallback?: string) =>
+          ({
+            RECOMMENDATION_WEIGHT_PURCHASE_COMPLETED: "10",
+            RECOMMENDATION_WEIGHT_PURCHASE_RETURNED: "2",
+          })[key] ?? fallback,
+      ),
+    } as unknown as ConfigService;
+    target = new RecommendationRuleService(config);
+
+    // Act
+    const completedWeight = target.getPurchaseWeight(
+      "order.purchase.completed",
+    );
+    const returnedWeight = target.getPurchaseWeight("order.purchase.returned");
+
+    // Assert
+    expect(completedWeight).toBe(10);
+    expect(returnedWeight).toBe(-8);
+  });
+
   it("should read hybrid weights from config and normalize their total", () => {
     // Arrange
     const config = {

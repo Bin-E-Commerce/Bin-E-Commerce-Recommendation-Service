@@ -1,6 +1,7 @@
 // Processor này định nghĩa retry/DLQ baseline cho Kafka; malformed event không được retry vì retry không thể sửa payload.
 
 import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import { KafkaProducerService } from "../../producers/kafka-producer.service";
 import {
   DEFAULT_KAFKA_RETRY_ATTEMPTS,
@@ -97,20 +98,32 @@ export class InteractionMessageProcessor {
     payload: unknown,
     reason: string,
   ): Promise<void> {
-    const eventId =
+    const candidateEventId =
       typeof payload === "object" && payload !== null && "eventId" in payload
-        ? String((payload as { eventId?: unknown }).eventId ?? "unknown")
-        : "unknown";
+        ? (payload as { eventId?: unknown }).eventId
+        : undefined;
+    const eventId =
+      typeof candidateEventId === "string" && candidateEventId.trim()
+        ? candidateEventId.trim()
+        : `raw-${createHash("sha256")
+            .update(
+              typeof payload === "string"
+                ? payload
+                : (JSON.stringify(payload) ?? "undefined"),
+            )
+            .digest("hex")
+            .slice(0, 32)}`;
 
     await this.kafkaProducer.publish(
       RECOMMENDATION_INTERACTIONS_DLQ_TOPIC,
       eventId,
       {
         eventVersion: 1,
-        eventId: "dlq:interactions:" + eventId + ":" + Date.now(),
+        // Giữ ID ổn định theo source event để DLQ/replay không nhân đôi metadata mỗi lần redelivery.
+        eventId: "dlq:interactions:" + eventId,
         eventName: "recommendation.processing.failed",
         failedAt: new Date().toISOString(),
-        reason,
+        reason: reason.slice(0, 500),
         originalEvent: payload,
       },
     );

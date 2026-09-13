@@ -180,10 +180,13 @@ export function validateInteractionEvent(
   }
   const recommendationExperimentVariant =
     payload.recommendationExperimentVariant;
+  // CONTROL chỉ còn hợp lệ cho attribution/token lịch sử; experiment mới không còn tạo variant này.
   if (
     recommendationExperimentVariant !== null &&
     recommendationExperimentVariant !== undefined &&
-    !["CONTROL", "HYBRID"].includes(String(recommendationExperimentVariant))
+    !["CONTROL", "HYBRID", "ML_HYBRID"].includes(
+      String(recommendationExperimentVariant),
+    )
   ) {
     throw new InvalidInteractionEventError(
       "recommendationExperimentVariant is not supported",
@@ -249,7 +252,10 @@ export function validateInteractionEvent(
         recommendationExperimentVariant === null ||
         recommendationExperimentVariant === undefined
           ? null
-          : (recommendationExperimentVariant as "CONTROL" | "HYBRID"),
+          : (recommendationExperimentVariant as
+              | "CONTROL"
+              | "HYBRID"
+              | "ML_HYBRID"),
     },
   };
 }

@@ -23,11 +23,31 @@ export class ProfileQueryRepository {
     dimension: string,
     limit = 12,
   ): Promise<PreferenceValue[]> {
-    return this.preferenceRepository.find({
-      where: { actorType, actorId, dimension: dimension as never },
-      order: { score: "DESC", lastSignalAt: "DESC" },
-      take: Math.min(limit, 50),
-    }) as unknown as PreferenceValue[];
+    // Lấy hai nhóm dương/âm độc lập để một return/refund mạnh không làm mất các preference dương.
+    // Application sẽ tiếp tục decay và chọn giới hạn cuối cùng cho ranking.
+    const createQuery = (condition: string) =>
+      this.preferenceRepository
+        .createQueryBuilder("preference")
+        .where("preference.actor_type = :actorType", { actorType })
+        .andWhere("preference.actor_id = :actorId", { actorId })
+        .andWhere("preference.dimension = :dimension", { dimension })
+        .andWhere(condition);
+    const safeLimit = Math.min(Math.max(limit, 1), 50);
+    const [positive, negative] = await Promise.all([
+      createQuery("preference.score > 0")
+        .orderBy("preference.score", "DESC")
+        .addOrderBy("preference.last_signal_at", "DESC")
+        .addOrderBy("preference.dimension_key", "ASC")
+        .take(safeLimit)
+        .getMany(),
+      createQuery("preference.score < 0")
+        .orderBy("ABS(preference.score)", "DESC")
+        .addOrderBy("preference.last_signal_at", "DESC")
+        .addOrderBy("preference.dimension_key", "ASC")
+        .take(safeLimit)
+        .getMany(),
+    ]);
+    return [...positive, ...negative] as unknown as PreferenceValue[];
   }
 
   // Merge toàn bộ preference guest trong transaction và trả false nếu session không tồn tại hoặc đã merge.

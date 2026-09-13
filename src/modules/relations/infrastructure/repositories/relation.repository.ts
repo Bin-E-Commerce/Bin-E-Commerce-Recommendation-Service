@@ -2,8 +2,8 @@ import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, EntityManager, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
-import { RecommendationInteractionEntity } from "../../../../database/interactions/entities/interaction.entity";
 import { RecommendationProductRelationEntity } from "../../../../database/relations/entities/product-relation.entity";
+import { RecommendationRelationSignalEntity } from "../../../../database/relations/entities/relation-signal.entity";
 
 export type RelationType = "CO_VIEW" | "CO_CART" | "CO_PURCHASE";
 
@@ -13,8 +13,8 @@ export class RelationRepository {
   constructor(
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
-    @InjectRepository(RecommendationInteractionEntity)
-    private readonly interactions: Repository<RecommendationInteractionEntity>,
+    @InjectRepository(RecommendationRelationSignalEntity)
+    private readonly signals: Repository<RecommendationRelationSignalEntity>,
     @InjectRepository(RecommendationProductRelationEntity)
     private readonly relations: Repository<RecommendationProductRelationEntity>,
   ) {}
@@ -39,48 +39,104 @@ export class RelationRepository {
     });
   }
 
-  // Claim event projection atomically bằng unique ledger, tránh xử lý duplicate Kafka lần hai.
-  // Lấy các product distinct trong cùng actor/window, có giới hạn để tránh pair explosion.
-  async findRecentProductIds(
+  // Lưu signal trong relation-owned read model trước khi tạo pair; không phụ thuộc interaction projector khác group.
+  async insertSignal(
+    input: {
+      eventId: string;
+      userId: string | null;
+      sessionId: string | null;
+      interactionType: string;
+      productId: string;
+      occurredAt: Date;
+    },
+    manager: EntityManager,
+  ): Promise<void> {
+    await manager.query(
+      `INSERT INTO recommendation_relation_signals
+        (event_id, user_id, session_id, interaction_type, product_id, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [
+        input.eventId,
+        input.userId,
+        input.sessionId,
+        input.interactionType,
+        input.productId,
+        input.occurredAt,
+      ],
+    );
+  }
+
+  // Lấy event thay vì chỉ product ID để pair-ledger có thể chống cộng trùng khi hai event đến lệch thứ tự.
+  async findRecentSignals(
     input: {
       userId: string | null;
       sessionId: string | null;
+      relationType: RelationType;
       since: Date;
       until: Date;
       types: string[];
       limit: number;
     },
     manager?: EntityManager,
-  ): Promise<string[]> {
-    const repository = (manager ?? this.interactions.manager).getRepository(
-      RecommendationInteractionEntity,
+  ): Promise<Array<{ eventId: string; productId: string; occurredAt: Date }>> {
+    if (!input.types.length) return [];
+    const repository = (manager ?? this.signals.manager).getRepository(
+      RecommendationRelationSignalEntity,
     );
     const query = repository
-      .createQueryBuilder("interaction")
-      .select("DISTINCT interaction.product_id", "productId")
-      .where("interaction.product_id IS NOT NULL")
-      .andWhere("interaction.occurred_at >= :since", { since: input.since })
-      .andWhere("interaction.occurred_at <= :until", { until: input.until })
-      .andWhere("interaction.interaction_type IN (:...types)", {
+      .createQueryBuilder("signal")
+      .select("signal.event_id", "eventId")
+      .addSelect("signal.product_id", "productId")
+      .addSelect("signal.occurred_at", "occurredAt")
+      .where("signal.occurred_at >= :since", { since: input.since })
+      .andWhere("signal.occurred_at <= :until", { until: input.until })
+      .andWhere("signal.interaction_type IN (:...types)", {
         types: input.types,
       });
-    if (input.sessionId)
-      query.andWhere("interaction.session_id = :sessionId", {
-        sessionId: input.sessionId,
-      });
-    else if (input.userId)
-      query.andWhere("interaction.user_id = :userId", { userId: input.userId });
-    else return [];
+    const scopes: string[] = [];
+    if (input.relationType === "CO_VIEW") {
+      if (!input.sessionId) return [];
+      scopes.push("signal.session_id = :sessionId");
+    } else {
+      if (input.sessionId) scopes.push("signal.session_id = :sessionId");
+      if (input.userId) scopes.push("signal.user_id = :userId");
+      if (scopes.length === 0) return [];
+    }
+    query.andWhere(`(${scopes.join(" OR ")})`, {
+      sessionId: input.sessionId,
+      userId: input.userId,
+    });
     const rows = await query
-      .select("interaction.product_id", "productId")
-      .addSelect("MAX(interaction.occurred_at)", "lastOccurredAt")
-      .groupBy("interaction.product_id")
-      // Sắp xếp bằng biểu thức/cột gốc để PostgreSQL không hạ alias camelCase thành chữ thường.
-      .orderBy("MAX(interaction.occurred_at)", "DESC")
-      .addOrderBy("interaction.product_id", "ASC")
-      .limit(Math.min(input.limit, 50))
-      .getRawMany<{ productId: string }>();
-    return rows.map((row) => row.productId).filter(Boolean);
+      .orderBy("signal.occurred_at", "ASC")
+      .addOrderBy("signal.event_id", "ASC")
+      .limit(this.normalizeLimit(input.limit, 50))
+      .getRawMany<{
+        eventId: string;
+        productId: string;
+        occurredAt: Date;
+      }>();
+    return rows.filter((row) => row.eventId && row.productId);
+  }
+
+  // Claim một cặp event trong transaction; chỉ caller claim thành công mới được cộng relation score.
+  async claimPair(
+    firstEventId: string,
+    secondEventId: string,
+    relationType: RelationType,
+    manager: EntityManager,
+  ): Promise<boolean> {
+    if (firstEventId === secondEventId) return false;
+    const [first, second] = [firstEventId, secondEventId].sort();
+    const inserted = (await manager.query(
+      `INSERT INTO recommendation_relation_pair_events
+        (first_event_id, second_event_id, relation_type)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (first_event_id, second_event_id, relation_type) DO NOTHING
+       RETURNING first_event_id`,
+      [first, second, relationType],
+    )) as Array<{ first_event_id: string }>;
+    return inserted.length > 0;
   }
 
   // Cộng directed relation bằng UPSERT; score delta do rule policy truyền vào và không hard-code trong persistence.
@@ -98,20 +154,34 @@ export class RelationRepository {
     },
     manager?: EntityManager,
   ): Promise<void> {
-    await (manager ?? this.relations.manager).query(
-      `
-      INSERT INTO recommendation_product_relations (source_product_id, target_product_id, relation_type, positive_count, negative_count, relation_score, last_signal_at, window_start, window_end)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      ON CONFLICT (source_product_id, target_product_id, relation_type) DO UPDATE SET
-        positive_count = recommendation_product_relations.positive_count + $4,
-        negative_count = recommendation_product_relations.negative_count + $5,
-        relation_score = recommendation_product_relations.relation_score + $6,
-        last_signal_at = GREATEST(recommendation_product_relations.last_signal_at, EXCLUDED.last_signal_at),
-        window_start = LEAST(recommendation_product_relations.window_start, EXCLUDED.window_start),
-        window_end = GREATEST(recommendation_product_relations.window_end, EXCLUDED.window_end),
-        updated_at = now()
-    `,
-      [
+    await this.addRelations([input], manager);
+  }
+
+  // Ghi nhiều pair trong một statement để order lớn không biến thành hàng nghìn
+  // round-trip PostgreSQL; caller vẫn dùng cùng transaction/ledger như trước.
+  async addRelations(
+    inputs: Array<{
+      sourceProductId: string;
+      targetProductId: string;
+      relationType: RelationType;
+      positiveDelta: number;
+      negativeDelta: number;
+      scoreDelta: number;
+      signalAt: Date;
+      windowStart: Date;
+      windowEnd: Date;
+    }>,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (inputs.length === 0) return;
+    const values: string[] = [];
+    const parameters: Array<string | number | Date> = [];
+    for (const [index, input] of inputs.entries()) {
+      const offset = index * 9;
+      values.push(
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9})`,
+      );
+      parameters.push(
         input.sourceProductId,
         input.targetProductId,
         input.relationType,
@@ -121,7 +191,24 @@ export class RelationRepository {
         input.signalAt,
         input.windowStart,
         input.windowEnd,
-      ],
+      );
+    }
+
+    await (manager ?? this.relations.manager).query(
+      `
+      INSERT INTO recommendation_product_relations
+        (source_product_id, target_product_id, relation_type, positive_count, negative_count, relation_score, last_signal_at, window_start, window_end)
+      VALUES ${values.join(",")}
+      ON CONFLICT (source_product_id, target_product_id, relation_type) DO UPDATE SET
+        positive_count = recommendation_product_relations.positive_count + EXCLUDED.positive_count,
+        negative_count = recommendation_product_relations.negative_count + EXCLUDED.negative_count,
+        relation_score = recommendation_product_relations.relation_score + EXCLUDED.relation_score,
+        last_signal_at = GREATEST(recommendation_product_relations.last_signal_at, EXCLUDED.last_signal_at),
+        window_start = LEAST(recommendation_product_relations.window_start, EXCLUDED.window_start),
+        window_end = GREATEST(recommendation_product_relations.window_end, EXCLUDED.window_end),
+        updated_at = now()
+      `,
+      parameters,
     );
   }
 
@@ -159,15 +246,21 @@ export class RelationRepository {
              ORDER BY ${effectiveScore} DESC, relation.target_product_id ASC
            ) AS row_number
          FROM recommendation_product_relations relation
-         WHERE relation.source_product_id = ANY($1)
-           AND relation.relation_type = ANY($2)
+         WHERE relation.source_product_id = ANY($1::varchar[])
+           AND relation.relation_type = ANY($2::varchar[])
            AND ${effectiveScore} > 0
        )
        SELECT "productId", "rawScore", "relationType", "anchorProductId"
        FROM ranked
        WHERE row_number <= $3
-       ORDER BY "rawScore" DESC, "productId" ASC`,
-      [sourceProductIds, types, Math.min(Math.max(limit, 1), 100)],
+       ORDER BY "rawScore" DESC, "productId" ASC
+       LIMIT $4`,
+      [
+        [...new Set(sourceProductIds)],
+        types,
+        100,
+        this.normalizeLimit(limit, 100),
+      ],
     )) as Array<{
       productId: string;
       rawScore: number | string;
@@ -184,21 +277,43 @@ export class RelationRepository {
     keep = 100,
     manager?: EntityManager,
   ): Promise<void> {
+    await this.pruneSourceRelationsBatch(
+      [sourceProductId],
+      relationType,
+      keep,
+      manager,
+    );
+  }
+
+  // Prune nhiều anchor trong một query để purchase/co-view projection không tạo
+  // thêm một round-trip cho từng source product.
+  async pruneSourceRelationsBatch(
+    sourceProductIds: string[],
+    relationType: RelationType,
+    keep = 100,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (sourceProductIds.length === 0) return;
     await (manager ?? this.relations.manager).query(
       `DELETE FROM recommendation_product_relations relation
         WHERE relation.id IN (
           SELECT id FROM (
             SELECT id,
                    ROW_NUMBER() OVER (
+                     PARTITION BY source_product_id
                      ORDER BY (relation_score * power(0.5, extract(epoch from (now() - last_signal_at)) / ${this.halfLifeSeconds()})) DESC,
                               target_product_id ASC
                    ) AS row_number
             FROM recommendation_product_relations
-            WHERE source_product_id = $1 AND relation_type = $2
+            WHERE source_product_id = ANY($1::varchar[]) AND relation_type = $2::varchar
           ) ranked
           WHERE ranked.row_number > $3
         )`,
-      [sourceProductId, relationType, Math.min(Math.max(keep, 1), 100)],
+      [
+        [...new Set(sourceProductIds)],
+        relationType,
+        this.normalizeLimit(keep, 100),
+      ],
     );
   }
 
@@ -210,5 +325,12 @@ export class RelationRepository {
     const days =
       Number.isFinite(configured) && configured > 0 ? configured : 30;
     return days * 86_400;
+  }
+
+  // Clamp limit tai persistence boundary de input loi khong tao SQL LIMIT NaN/Infinity.
+  private normalizeLimit(value: number, maximum: number): number {
+    return Number.isFinite(value)
+      ? Math.min(Math.max(Math.trunc(value), 1), maximum)
+      : maximum;
   }
 }

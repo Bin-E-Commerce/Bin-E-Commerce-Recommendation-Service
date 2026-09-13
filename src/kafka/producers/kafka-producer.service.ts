@@ -77,6 +77,34 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
   }
 
   // Gom các lần reconnect đồng thời thành một handshake để nhiều Kafka event không tạo nhiều socket cạnh tranh.
+  // Gửi nhiều event trong một Kafka produce request để các impression xuất hiện cùng một nhịp scroll không tạo nhiều round-trip.
+  // Mỗi message vẫn giữ key và payload riêng; Kafka tiếp tục bảo toàn thứ tự trong cùng partition theo actor key.
+  async publishBatch(
+    topic: string,
+    messages: Array<{ key: string; payload: unknown }>,
+  ): Promise<void> {
+    if (messages.length === 0) return;
+    if (this.stopping) throw new Error("Kafka producer is stopping");
+    await this.ensureConnected();
+    if (!this.connected) {
+      throw new Error("Kafka producer is not connected");
+    }
+
+    try {
+      await this.producer.send({
+        topic,
+        messages: messages.map(({ key, payload }) => ({
+          key,
+          value: JSON.stringify(payload),
+        })),
+      });
+    } catch (error) {
+      this.connected = false;
+      await this.producer.disconnect().catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async ensureConnected(): Promise<void> {
     if (this.connected) return;
     if (this.stopping) throw new Error("Kafka producer is stopping");

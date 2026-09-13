@@ -32,12 +32,18 @@ export function getKafkaRetryDelayMs(
   baseDelayMs = DEFAULT_KAFKA_RETRY_BASE_DELAY_MS,
   maxDelayMs = DEFAULT_KAFKA_RETRY_MAX_DELAY_MS,
 ): number {
-  const safeAttempt = Math.max(1, Math.floor(attempt));
-  const safeMax = Math.max(0, maxDelayMs);
-  const exponential = Math.min(
-    Math.max(0, baseDelayMs) * 2 ** (safeAttempt - 1),
-    safeMax,
-  );
+  const safeAttempt =
+    Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 1;
+  // Env sai/NaN không được biến setTimeout thành busy-loop retry ngay lập tức.
+  const safeBase =
+    Number.isFinite(baseDelayMs) && baseDelayMs >= 0
+      ? baseDelayMs
+      : DEFAULT_KAFKA_RETRY_BASE_DELAY_MS;
+  const safeMax =
+    Number.isFinite(maxDelayMs) && maxDelayMs >= 0
+      ? maxDelayMs
+      : DEFAULT_KAFKA_RETRY_MAX_DELAY_MS;
+  const exponential = Math.min(safeBase * 2 ** (safeAttempt - 1), safeMax);
   const jitter =
     exponential === 0
       ? 0

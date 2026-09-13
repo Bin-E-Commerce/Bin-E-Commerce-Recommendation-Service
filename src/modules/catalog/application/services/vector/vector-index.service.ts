@@ -11,6 +11,13 @@ export interface SemanticSearchResult {
   similarityScore: number;
   anchorProductId?: string;
   modelVersion: string;
+  contentHash: string;
+}
+
+export interface SemanticVectorResult {
+  vector: number[];
+  contentHash: string;
+  modelVersion: string;
 }
 
 // Port/adapter HTTP cho Qdrant, không kéo SDK vào business layer và có thể đổi sang managed adapter sau này.
@@ -25,7 +32,10 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
   private readonly distance: "Cosine" | "Dot" | "Euclid";
   private readonly timeoutMs: number;
   private readonly initializationRetryMs: number;
+  private readonly physicalCollection: string;
+  private readonly aliasPromotionEnabled: boolean;
   private collectionReady = false;
+  private activeCollection: string | null = null;
   private initializing?: Promise<boolean>;
   private initializationTimer?: NodeJS.Timeout;
   private stopping = false;
@@ -42,6 +52,9 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
       "QDRANT_COLLECTION_VERSION",
       "1",
     );
+    this.physicalCollection = `${this.alias}_v${this.collectionVersion}`;
+    this.aliasPromotionEnabled =
+      config.get<string>("QDRANT_ALIAS_PROMOTION_ENABLED", "false") === "true";
     this.modelVersion = config.get<string>(
       "EMBEDDING_MODEL_VERSION",
       config.get<string>("EMBEDDING_MODEL", "text-embedding-3-small"),
@@ -103,7 +116,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
 
   // Khởi tạo collection/alias và chỉ đánh dấu ready sau khi Qdrant xác nhận đầy đủ.
   private async initializeCollection(): Promise<boolean> {
-    const collection = `${this.alias}_v${this.collectionVersion}`;
+    const collection = this.physicalCollection;
     try {
       const exists = await this.request(`/collections/${collection}`);
       if (!exists.ok) {
@@ -133,14 +146,34 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
       const collectionInfo = await this.request(`/collections/${collection}`);
       const collectionBody = collectionInfo.ok
         ? ((await collectionInfo.json()) as {
-            result?: { points_count?: number };
+            result?: {
+              points_count?: number;
+              config?: {
+                params?: {
+                  vectors?:
+                    | { size?: number }
+                    | Record<string, { size?: number }>;
+                };
+              };
+            };
           })
         : { result: { points_count: 0 } };
+      const vectorsConfig = collectionBody.result?.config?.params?.vectors;
+      const configuredSize =
+        vectorsConfig && "size" in vectorsConfig
+          ? vectorsConfig.size
+          : undefined;
+      if (configuredSize !== undefined && configuredSize !== this.dimensions) {
+        throw new Error(
+          `QDRANT_VECTOR_SIZE_MISMATCH_${configuredSize}_${this.dimensions}`,
+        );
+      }
       const indexedPoints = collectionBody.result?.points_count ?? 0;
+      const canPromoteVersion = this.aliasPromotionEnabled && indexedPoints > 0;
       const action = currentAlias
         ? currentAlias.collection_name === collection
           ? null
-          : indexedPoints > 0
+          : canPromoteVersion
             ? {
                 change_alias: {
                   collection_name: collection,
@@ -160,7 +193,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         !action
       ) {
         this.logger.warn(
-          `Qdrant alias switch skipped because ${collection} is empty`,
+          `Qdrant alias switch skipped for ${collection}; enable QDRANT_ALIAS_PROMOTION_ENABLED only after backfill verification`,
         );
       }
       if (action) {
@@ -171,6 +204,11 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         if (!aliasUpdate.ok)
           throw new Error(`QDRANT_ALIAS_UPDATE_FAILED_${aliasUpdate.status}`);
       }
+      // Khi alias đang trỏ collection cũ, ghi vector mới vào physical collection
+      // riêng để đổi model/dimension không trộn vector hoặc làm gián đoạn collection đang phục vụ.
+      this.activeCollection = action
+        ? collection
+        : (currentAlias?.collection_name ?? collection);
       this.collectionReady = true;
       return true;
     } catch (error) {
@@ -197,14 +235,14 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     maxPrice: string;
     status: string;
     isInStock: boolean;
+    embeddingStatus?: "READY" | "PENDING" | "PROCESSING" | "STALE" | "FAILED";
   }): Promise<void> {
-    if (!(await this.ensureCollection()))
-      throw new Error("QDRANT_NOT_READY");
+    if (!(await this.ensureCollection())) throw new Error("QDRANT_NOT_READY");
     if (input.vector.length !== this.dimensions)
       throw new Error("EMBEDDING_DIMENSION_MISMATCH");
     const { vector, ...payload } = input;
     const response = await this.request(
-      `/collections/${this.alias}/points?wait=true`,
+      `/collections/${this.physicalCollection}/points?wait=true`,
       {
         method: "PUT",
         body: JSON.stringify({
@@ -212,7 +250,13 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             {
               id: input.productId,
               vector,
-              payload: { ...payload, productId: input.productId },
+              // Chỉ vector đã hoàn tất mới được retrieval; field này loại vector
+              // cũ sau content update dù status/stock của product vẫn đang ACTIVE.
+              payload: {
+                ...payload,
+                embeddingStatus: input.embeddingStatus ?? "READY",
+                productId: input.productId,
+              },
             },
           ],
         }),
@@ -229,7 +273,12 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     excludeProductIds: string[] = [],
   ): Promise<SemanticSearchResult[]> {
     if (!(await this.ensureCollection())) return [];
-    if (vector.length !== this.dimensions) return [];
+    if (
+      vector.length !== this.dimensions ||
+      vector.some((value) => !Number.isFinite(value))
+    )
+      return [];
+    const excluded = new Set(excludeProductIds);
     const response = await this.request(
       `/collections/${this.alias}/points/search`,
       {
@@ -242,6 +291,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             must: [
               { key: "status", match: { value: "ACTIVE" } },
               { key: "isInStock", match: { value: true } },
+              { key: "embeddingStatus", match: { value: "READY" } },
               { key: "modelVersion", match: { value: this.modelVersion } },
             ],
           },
@@ -253,7 +303,11 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
       result?: Array<{
         id: string;
         score: number;
-        payload?: { productId?: string; modelVersion?: string };
+        payload?: {
+          productId?: string;
+          modelVersion?: string;
+          contentHash?: string;
+        };
       }>;
     };
     return (body.result ?? [])
@@ -261,26 +315,63 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         productId: item.payload?.productId ?? item.id,
         similarityScore: item.score,
         modelVersion: item.payload?.modelVersion ?? "unknown",
+        contentHash: item.payload?.contentHash,
       }))
-      .filter((item) => !excludeProductIds.includes(item.productId));
+      .filter(
+        (item) =>
+          Number.isFinite(item.similarityScore) &&
+          !excluded.has(item.productId),
+      )
+      .filter(
+        (item): item is SemanticSearchResult =>
+          item.contentHash !== undefined &&
+          item.modelVersion === this.modelVersion,
+      );
   }
 
   // Lấy vector của anchor product để semantic source không gọi OpenAI trong request recommendation.
-  async getProductVector(productId: string): Promise<number[] | null> {
+  async getProductVector(
+    productId: string,
+    expectedContentHash?: string,
+  ): Promise<SemanticVectorResult | null> {
     if (!(await this.ensureCollection())) return null;
     const response = await this.request(
       `/collections/${this.alias}/points/${encodeURIComponent(productId)}?with_vector=true&with_payload=true`,
     );
     if (!response.ok) return null;
     const body = (await response.json()) as {
-      result?: { vector?: number[]; payload?: { modelVersion?: string } };
+      result?: {
+        vector?: number[];
+        payload?: {
+          modelVersion?: string;
+          embeddingStatus?: string;
+          contentHash?: string;
+        };
+      };
     };
-    if (body.result?.payload?.modelVersion !== this.modelVersion) return null;
+    if (
+      body.result?.payload?.modelVersion !== this.modelVersion ||
+      body.result?.payload?.embeddingStatus !== "READY"
+    )
+      return null;
+    const contentHash = body.result?.payload?.contentHash;
+    if (
+      !contentHash ||
+      (expectedContentHash && contentHash !== expectedContentHash)
+    )
+      return null;
     // Bỏ vector sai dimension trước khi centroid xử lý để tránh NaN lan vào toàn bộ semantic query.
-    return Array.isArray(body.result?.vector) &&
-      body.result.vector.length === this.dimensions
-      ? body.result.vector
-      : null;
+    if (
+      !Array.isArray(body.result?.vector) ||
+      body.result.vector.length !== this.dimensions ||
+      body.result.vector.some((value) => !Number.isFinite(value))
+    )
+      return null;
+    return {
+      vector: body.result.vector,
+      contentHash,
+      modelVersion: this.modelVersion,
+    };
   }
 
   // Cập nhật status/stock payload khi catalog động thay đổi mà không rebuild embedding.
@@ -288,17 +379,19 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     productId: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    if (!(await this.ensureCollection()))
-      throw new Error("QDRANT_NOT_READY");
-    const response = await this.request(
-      `/collections/${this.alias}/points/payload?wait=true`,
-      {
-        method: "POST",
-        body: JSON.stringify({ points: [productId], payload }),
-      },
+    if (!(await this.ensureCollection())) throw new Error("QDRANT_NOT_READY");
+    const collections = [this.activeCollection, this.physicalCollection].filter(
+      (value, index, values): value is string =>
+        Boolean(value) && values.indexOf(value) === index,
     );
-    if (!response.ok)
-      throw new Error(`QDRANT_PAYLOAD_UPDATE_FAILED_${response.status}`);
+    const results = await Promise.all(
+      collections.map((collection) =>
+        this.updatePayloadInCollection(collection, productId, payload),
+      ),
+    );
+    const failed = results.find((result) => !result.ok);
+    if (failed)
+      throw new Error(`QDRANT_PAYLOAD_UPDATE_FAILED_${failed.status}`);
   }
 
   // Deactivate vector payload để semantic filter không trả product inactive/out-of-stock.
@@ -311,14 +404,21 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
 
   // Xóa vector khi catalog đã deleted; status payload vẫn là fallback trước khi cleanup hoàn tất.
   async deleteProductVector(productId: string): Promise<void> {
-    if (!(await this.ensureCollection()))
-      throw new Error("QDRANT_NOT_READY");
-    const response = await this.request(
-      `/collections/${this.alias}/points/delete?wait=true`,
-      { method: "POST", body: JSON.stringify({ points: [productId] }) },
+    if (!(await this.ensureCollection())) throw new Error("QDRANT_NOT_READY");
+    const collections = [this.activeCollection, this.physicalCollection].filter(
+      (value, index, values): value is string =>
+        Boolean(value) && values.indexOf(value) === index,
     );
-    if (!response.ok)
-      throw new Error(`QDRANT_DELETE_FAILED_${response.status}`);
+    const results = await Promise.all(
+      collections.map((collection) =>
+        this.request(`/collections/${collection}/points/delete?wait=true`, {
+          method: "POST",
+          body: JSON.stringify({ points: [productId] }),
+        }),
+      ),
+    );
+    const failed = results.find((result) => !result.ok);
+    if (failed) throw new Error(`QDRANT_DELETE_FAILED_${failed.status}`);
   }
 
   // Health adapter dùng cho diagnostics, không được gọi trong recommendation request.
@@ -367,5 +467,17 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  // Cập nhật metadata ở một collection cụ thể; migration có thể cần đồng bộ cả collection đang đọc và collection đang build.
+  private updatePayloadInCollection(
+    collection: string,
+    productId: string,
+    payload: Record<string, unknown>,
+  ): Promise<Response> {
+    return this.request(`/collections/${collection}/points/payload?wait=true`, {
+      method: "POST",
+      body: JSON.stringify({ points: [productId], payload }),
+    });
   }
 }

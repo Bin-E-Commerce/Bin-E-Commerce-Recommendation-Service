@@ -2,14 +2,16 @@
 
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { CatalogService } from "../../../../../catalog/application/services/catalog/catalog.service";
 import { VectorIndexService } from "../../../../../catalog/application/services/vector/vector-index.service";
 
-// Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để Phase 2 ranking/fallback tiếp tục hoạt động.
+// Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để Standard Ranking tiếp tục với nguồn khác.
 @Injectable()
 export class SemanticCandidateService {
   constructor(
     private readonly vector: VectorIndexService,
     private readonly config: ConfigService,
+    private readonly catalog: CatalogService,
   ) {}
 
   // Tạo centroid ngắn hạn từ anchor product gần đây rồi hydrate card bằng catalog read model cục bộ.
@@ -30,6 +32,7 @@ export class SemanticCandidateService {
       rawScore: number;
       anchorProductId?: string;
       modelVersion: string;
+      contentHash: string;
     }>
   > {
     if (
@@ -57,18 +60,50 @@ export class SemanticCandidateService {
       for (const productId of input.profileProductIds.slice(0, 5))
         addAnchor(productId, 0.5);
       const anchors = [...anchorWeights.keys()];
-      const vectors = (
-        await Promise.all(
-          anchors.map(async (id) => ({
-            id,
-            vector: await this.vector.getProductVector(id),
-          })),
-        )
-      ).filter((item): item is { id: string; vector: number[] } =>
-        Array.isArray(item.vector),
+      const snapshots = await this.catalog.findSnapshots(anchors);
+      const snapshotById = new Map(
+        snapshots.map((snapshot) => [snapshot.productId, snapshot]),
       );
+      const vectorResults = await Promise.allSettled(
+        anchors.map(async (id) => {
+          const contentHash = snapshotById.get(id)?.contentHash;
+          if (!contentHash) return null;
+          const result = await this.vector.getProductVector(id, contentHash);
+          return result ? { id, ...result } : null;
+        }),
+      );
+      const vectors = vectorResults
+        .filter(
+          (
+            result,
+          ): result is PromiseFulfilledResult<{
+            id: string;
+            vector: number[];
+            contentHash: string;
+            modelVersion: string;
+          } | null> => result.status === "fulfilled",
+        )
+        .map((result) => result.value)
+        .filter(
+          (
+            item,
+          ): item is {
+            id: string;
+            vector: number[];
+            contentHash: string;
+            modelVersion: string;
+          } => item !== null,
+        );
       if (!vectors.length) return [];
       const length = vectors[0]!.vector.length;
+      if (
+        vectors.some(
+          (item) =>
+            item.vector.length !== length ||
+            item.vector.some((value) => !Number.isFinite(value)),
+        )
+      )
+        return [];
       const totalWeight = vectors.reduce(
         (sum, item) => sum + (anchorWeights.get(item.id) ?? 0),
         0,
@@ -88,13 +123,16 @@ export class SemanticCandidateService {
         Math.min(input.limit, 60),
         input.excludeProductIds,
       );
+      // Tính anchor mạnh nhất một lần thay vì sort toàn bộ anchor cho từng result.
+      const primaryAnchorProductId = [...anchorWeights.entries()].sort(
+        (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
+      )[0]?.[0];
       return results.map((result) => ({
         productId: result.productId,
         rawScore: result.similarityScore,
-        anchorProductId: [...anchorWeights.entries()].sort(
-          (left, right) => right[1] - left[1] || left[0].localeCompare(right[0]),
-        )[0]?.[0],
+        anchorProductId: primaryAnchorProductId,
         modelVersion: result.modelVersion,
+        contentHash: result.contentHash,
       }));
     } catch {
       return [];

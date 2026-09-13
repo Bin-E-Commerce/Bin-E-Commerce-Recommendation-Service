@@ -19,7 +19,6 @@ export class SemanticContentService {
     input: RecommendationSemanticProductContent,
   ): RecommendationSemanticProductContent {
     const attributes = input.attributes
-      .slice(0, 50)
       .map((attribute) => ({
         key: this.normalize(attribute.key, 128),
         value: this.normalize(attribute.value, 500),
@@ -29,7 +28,8 @@ export class SemanticContentService {
         `${left.key}:${left.value}`.localeCompare(
           `${right.key}:${right.value}`,
         ),
-      );
+      )
+      .slice(0, 50);
     return {
       title: this.normalize(input.title, 255),
       shortDescription: input.shortDescription

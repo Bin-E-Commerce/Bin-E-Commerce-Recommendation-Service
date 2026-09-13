@@ -20,7 +20,7 @@ import { EmbeddingJobService } from "../embedding/embedding-job.service";
 import { SemanticContentService } from "../semantic/semantic-content.service";
 import { VectorIndexService } from "../vector/vector-index.service";
 import { CatalogSyncCheckpointRepository } from "../../../infrastructure/repositories/catalog-sync-checkpoint.repository";
-import { DataSource, EntityManager } from "typeorm";
+import type { EntityManager } from "typeorm";
 
 @Injectable()
 export class CatalogService implements OnModuleInit, OnModuleDestroy {
@@ -37,7 +37,6 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
     private readonly semantic: SemanticContentService,
     private readonly vector: VectorIndexService,
     private readonly checkpoints: CatalogSyncCheckpointRepository,
-    private readonly dataSource: DataSource,
   ) {}
 
   // Chạy initial sync tùy chọn sau khi service khởi động; lỗi bootstrap không được làm process recommendation crash.
@@ -81,6 +80,7 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
   // Upsert snapshot catalog theo version để event cũ không ghi đè dữ liệu mới và delete chỉ chuyển trạng thái.
   async upsert(
     product: Partial<RecommendationCatalogProduct> & { productId: string },
+    options: { strictVectorSync?: boolean; invalidateCache?: boolean } = {},
   ): Promise<void> {
     const transactionResult = await this.upsertAndQueueEmbedding(product);
     const applied = transactionResult.applied;
@@ -108,13 +108,29 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
         }),
       });
     }
-    if (applied && product.status && product.contentHash) {
-      await this.vectorPayloadUpdate(product.productId, {
-        status: product.status,
-        isInStock: product.isInStock,
-      });
+    // Redelivery cũng phải retry payload invalidation; lần đầu có thể Qdrant đang tạm unavailable.
+    if (current.contentHash) {
+      await this.vectorPayloadUpdate(
+        product.productId,
+        {
+          // Khi content đổi, vector cũ phải bị loại khỏi retrieval cho tới khi
+          // completion mới cập nhật vector; nếu không semantic search dùng nội dung stale.
+          contentHash: current.contentHash,
+          catalogRevision: current.catalogVersion,
+          embeddingStatus: current.embeddingStatus,
+          status: current.status,
+          isInStock: current.isInStock,
+        },
+        options.strictVectorSync === true,
+      );
     }
-    if (applied) await this.redis.invalidateRecommendations();
+    // Invalidate lại ở redelivery để cache cũ không tồn tại chỉ vì lần đầu Redis lỗi.
+    if (
+      options.invalidateCache !== false &&
+      (applied || current.contentHash === product.contentHash)
+    ) {
+      await this.redis.invalidateRecommendations();
+    }
   }
 
   // Commit catalog snapshot và embedding outbox cùng transaction để process crash không làm mất job semantic.
@@ -125,7 +141,7 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
     current: RecommendationCatalogProduct | null;
     embeddingQueued: boolean;
   }> {
-    return this.dataSource.transaction(async (manager: EntityManager) => {
+    return this.repository.transaction(async (manager: EntityManager) => {
       const applied = await this.repository.upsertIfNewer(product, manager);
       const current = await this.repository.findOneWithManager(
         product.productId,
@@ -158,6 +174,22 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
       if (embeddingIsCurrent) {
         return { applied, current, embeddingQueued: false };
       }
+
+      // Model hoặc dimension đổi thì vector READY cũ không còn tương thích;
+      // chuyển read model sang PENDING trong cùng transaction trước khi tạo job mới.
+      await this.repository.updateEmbeddingState(
+        product.productId,
+        {
+          status: "PENDING",
+          modelVersion: expectedModel,
+          dimensions: expectedDimensions,
+        },
+        product.contentHash,
+        manager,
+      );
+      current.embeddingStatus = "PENDING";
+      current.embeddingModelVersion = expectedModel;
+      current.embeddingDimensions = expectedDimensions;
       await this.embeddingJobs.enqueueProduct(
         {
           productId: product.productId,
@@ -182,10 +214,15 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
   async deactivate(productId: string): Promise<void> {
     const applied = await this.repository.deactivate(productId);
     if (!applied) return;
-    await this.vectorPayloadUpdate(productId, {
-      status: "INACTIVE",
-      isInStock: false,
-    });
+    await this.vectorPayloadUpdate(
+      productId,
+      {
+        status: "INACTIVE",
+        isInStock: false,
+        embeddingStatus: "STALE",
+      },
+      true,
+    );
     await this.redis.invalidateRecommendations();
   }
 
@@ -203,52 +240,63 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
         data.catalogRevision,
       );
       if (applied) {
-        await this.vectorPayloadUpdate(data.productId, {
-          status: "INACTIVE",
-          isInStock: false,
-        });
+        await this.vectorPayloadUpdate(
+          data.productId,
+          {
+            status: "INACTIVE",
+            isInStock: false,
+            embeddingStatus: "STALE",
+          },
+          true,
+        );
         await this.redis.invalidateRecommendations();
       }
       return;
     }
     const current = await this.repository.findOne(data.productId);
-    await this.upsert({
-      productId: data.productId,
-      originType: data.originType,
-      name: data.name,
-      slug: data.slug,
-      imageUrl: data.imageUrl,
-      categoryId: data.categoryId,
-      brandId: data.brandId,
-      sellerShopId: data.sellerShopId,
-      externalShopId: data.externalShopId,
-      minPrice: data.minPrice,
-      maxPrice: data.maxPrice,
-      ratingAvg: data.ratingAvg,
-      reviewCount: data.reviewCount,
-      totalSold: data.totalSold,
-      status: data.status,
-      isInStock: data.isInStock,
-      createdAt: new Date(data.createdAt),
-      updatedAt: new Date(data.updatedAt),
-      catalogVersion: data.catalogRevision,
-      shortDescription: data.semanticContent.shortDescription,
-      description: data.semanticContent.description,
-      brandName: data.semanticContent.brandName,
-      categoryPath: data.semanticContent.categoryPath,
-      semanticAttributes: data.semanticContent.attributes,
-      contentHash: data.semanticContent.contentHash,
-      embeddingStatus:
-        current?.contentHash === data.semanticContent.contentHash
-          ? current.embeddingStatus
-          : "PENDING",
-    });
+    await this.upsert(
+      {
+        productId: data.productId,
+        originType: data.originType,
+        name: data.name,
+        slug: data.slug,
+        imageUrl: data.imageUrl,
+        categoryId: data.categoryId,
+        brandId: data.brandId,
+        sellerShopId: data.sellerShopId,
+        externalShopId: data.externalShopId,
+        minPrice: data.minPrice,
+        maxPrice: data.maxPrice,
+        ratingAvg: data.ratingAvg,
+        reviewCount: data.reviewCount,
+        totalSold: data.totalSold,
+        status: data.status,
+        isInStock: data.isInStock,
+        createdAt: new Date(data.createdAt),
+        updatedAt: new Date(data.updatedAt),
+        catalogVersion: data.catalogRevision,
+        shortDescription: data.semanticContent.shortDescription,
+        description: data.semanticContent.description,
+        brandName: data.semanticContent.brandName,
+        categoryPath: data.semanticContent.categoryPath,
+        semanticAttributes: data.semanticContent.attributes,
+        contentHash: data.semanticContent.contentHash,
+        embeddingStatus:
+          current?.contentHash === data.semanticContent.contentHash
+            ? current.embeddingStatus
+            : "PENDING",
+      },
+      // Catalog event chỉ được commit offset sau khi payload dynamic đã đồng bộ
+      // hoặc đã được Kafka retry/DLQ rõ ràng; không âm thầm để vector stale.
+      { strictVectorSync: true },
+    );
   }
 
-  // Cập nhật payload Qdrant best-effort cho status/stock; vector index unavailable không được làm catalog event retry vô hạn.
+  // Cập nhật payload Qdrant; bootstrap có thể best-effort nhưng catalog event sẽ retry khi index chưa sẵn sàng.
   private async vectorPayloadUpdate(
     productId: string,
     payload: Record<string, unknown>,
+    required = false,
   ): Promise<void> {
     try {
       await this.vector.updateProductPayload(productId, payload);
@@ -256,6 +304,7 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug(
         `Qdrant payload update deferred for ${productId}: ${error instanceof Error ? error.message : "unknown"}`,
       );
+      if (required) throw error;
     }
   }
 
@@ -303,6 +352,13 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
     productIds: string[],
   ): Promise<RecommendationCatalogProduct[]> {
     return this.repository.findByIds(productIds);
+  }
+
+  // Lấy snapshot kể cả inactive để semantic source xác thực contentHash của anchor trước khi dùng vector.
+  async findSnapshots(
+    productIds: string[],
+  ): Promise<RecommendationCatalogProduct[]> {
+    return this.repository.findSnapshots(productIds);
   }
 
   // Bootstrap catalog theo page từ Product Service, dùng riêng cho initial sync và không chạy trong recommendation request.
@@ -365,9 +421,11 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
       };
       const items = body.items ?? [];
       for (const item of items) {
-        await this.upsert(this.toReadModel(item));
+        await this.upsert(this.toReadModel(item), { invalidateCache: false });
         imported += 1;
       }
+      // Một lần invalidate cho mỗi batch thay vì một lần cho từng product trong catalog lớn.
+      await this.redis.invalidateRecommendations();
       await this.checkpoints.saveNextPage("product-catalog", page + 1);
       if (items.length === 0 || page >= (body.totalPages ?? page)) break;
       page += 1;
@@ -413,16 +471,18 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
       ratingAvg: item.ratingAvg ?? null,
       reviewCount: item.reviewCount ?? 0,
       totalSold: item.totalSold ?? 0,
-      status: item.status ?? "ACTIVE",
-      isInStock: item.isInStock ?? true,
+      // Snapshot thieu status/stock khong duoc mac dinh thanh san pham public/con hang.
+      status: item.status ?? "INACTIVE",
+      isInStock: item.isInStock ?? false,
       createdAt: item.createdAt ? new Date(item.createdAt) : now,
       updatedAt: item.updatedAt ? new Date(item.updatedAt) : now,
       catalogVersion: item.catalogVersion ?? "1",
-      shortDescription: item.shortDescription ?? null,
-      description: item.description ?? null,
-      brandName: item.brandName ?? null,
-      categoryPath: item.categoryPath ?? null,
-      semanticAttributes: item.semanticAttributes ?? [],
+      // Luu dung noi dung da normalize de text embedding va contentHash luon dong bo.
+      shortDescription: semanticContent.shortDescription,
+      description: semanticContent.description,
+      brandName: semanticContent.brandName,
+      categoryPath: semanticContent.categoryPath,
+      semanticAttributes: semanticContent.attributes,
       contentHash: item.contentHash ?? semanticContent.contentHash,
       embeddingStatus:
         item.contentHash || semanticContent.contentHash

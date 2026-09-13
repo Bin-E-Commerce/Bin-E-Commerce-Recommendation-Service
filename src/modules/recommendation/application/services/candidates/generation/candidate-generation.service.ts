@@ -25,6 +25,7 @@ export class CandidateGenerationService {
   async generate(
     input: CandidateSourceInput,
   ): Promise<CandidateSourceResult[]> {
+    const excludedProductIds = new Set(input.excludedProductIds);
     const tasks: Array<{
       source: string;
       run: () => Promise<CandidateSourceResult>;
@@ -38,7 +39,7 @@ export class CandidateGenerationService {
             () =>
               this.catalog.findByIds(
                 input.profileProductIds.filter(
-                  (productId) => !input.excludedProductIds.includes(productId),
+                  (productId) => !excludedProductIds.has(productId),
                 ),
               ),
           ),
@@ -107,10 +108,25 @@ export class CandidateGenerationService {
         },
       );
     }
-    const settled = await Promise.allSettled(tasks.map((task) => task.run()));
+    const hasAnchors = Boolean(
+      input.productId ||
+      input.profileProductIds.length ||
+      input.recentProductIds.length,
+    );
+    // Semantic và co-behavior chỉ có ý nghĩa khi request có anchor; bỏ qua lúc cold-start để tránh query Qdrant/relation thừa.
+    const runnableTasks = hasAnchors
+      ? tasks
+      : tasks.filter(
+          (task) =>
+            task.source !== "SEMANTIC_SIMILARITY" &&
+            task.source !== "CO_BEHAVIOR",
+        );
+    const settled = await Promise.allSettled(
+      runnableTasks.map((task) => task.run()),
+    );
     return settled.flatMap((result, index) => {
       if (result.status === "fulfilled") return [result.value];
-      const task = tasks[index];
+      const task = runnableTasks[index];
       if (task)
         this.logger.warn(
           `Candidate source ${task.source} unavailable: ${this.errorMessage(result.reason)}`,
@@ -145,21 +161,33 @@ export class CandidateGenerationService {
       excludeProductIds: input.excludedProductIds,
       limit: 60,
     });
-    const byId = new Map(
-      candidates.map((candidate) => [candidate.productId, candidate]),
-    );
-    const sourcePosition = new Map(
-      candidates.map((candidate, index) => [
-        candidate.productId,
-        { rank: index + 1, size: candidates.length },
-      ]),
-    );
     const products = await this.catalog.findByIds(
       candidates.map((candidate) => candidate.productId),
     );
+    const hydratedById = new Map(
+      products.map((product) => [product.productId, product]),
+    );
+    // Qdrant là index eventually consistent; chỉ nhận kết quả khi vector vẫn trỏ đúng semantic snapshot local.
+    const validCandidates = candidates.filter((candidate) => {
+      const product = hydratedById.get(candidate.productId);
+      return Boolean(
+        product?.contentHash &&
+        candidate.contentHash &&
+        product.contentHash === candidate.contentHash,
+      );
+    });
+    const byId = new Map(
+      validCandidates.map((candidate) => [candidate.productId, candidate]),
+    );
+    const sourcePosition = new Map(
+      validCandidates.map((candidate, index) => [
+        candidate.productId,
+        { rank: index + 1, size: validCandidates.length },
+      ]),
+    );
     return {
       source: "SEMANTIC_SIMILARITY",
-      products,
+      products: products.filter((product) => byId.has(product.productId)),
       contributionByProductId: new Map(
         products.map((product, index) => {
           const candidate = byId.get(product.productId);
@@ -185,7 +213,11 @@ export class CandidateGenerationService {
     input: CandidateSourceInput,
   ): Promise<CandidateSourceResult> {
     const anchors = [
-      ...new Set([...input.profileProductIds, ...input.recentProductIds]),
+      ...new Set([
+        ...(input.productId ? [input.productId] : []),
+        ...input.profileProductIds,
+        ...input.recentProductIds,
+      ]),
     ].slice(0, 10);
     const candidates = await this.relations.findCandidates(
       anchors,
@@ -226,6 +258,7 @@ export class CandidateGenerationService {
         { rank: index + 1, size: normalizedCandidates.length },
       ]),
     );
+    const anchorProductId = anchors[0];
     const products = await this.catalog.findByIds(
       normalizedCandidates.map((candidate) => candidate.productId),
     );
@@ -241,6 +274,7 @@ export class CandidateGenerationService {
             (candidate?.contributions ?? []).map((contribution) => ({
               ...contribution,
               reasonCode: "CO_BEHAVIOR_RELATED",
+              anchorProductId: contribution.anchorProductId || anchorProductId,
               sourceRank: position?.rank ?? index + 1,
               sourceSize: position?.size ?? products.length,
             })),

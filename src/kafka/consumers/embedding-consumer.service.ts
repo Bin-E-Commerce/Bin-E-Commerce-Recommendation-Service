@@ -17,7 +17,6 @@ import {
   getNextKafkaOffset,
 } from "../config/kafka.constants";
 import { KafkaProducerService } from "../producers/kafka-producer.service";
-import { SemanticContentService } from "../../modules/catalog/application/services/semantic/semantic-content.service";
 
 // Consumer group riêng cho embedding completion; AI/Qdrant retry không block interaction/profile projection.
 @Injectable()
@@ -34,7 +33,6 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
     private readonly vector: VectorIndexService,
     private readonly jobs: EmbeddingJobRepository,
     private readonly producer: KafkaProducerService,
-    private readonly semantic: SemanticContentService,
   ) {
     const brokers = config
       .get<string>("KAFKA_BROKERS", "localhost:29092")
@@ -92,7 +90,10 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
               typeof data.jobId !== "string" ||
               typeof data.productId !== "string" ||
               typeof data.contentHash !== "string" ||
+              typeof data.model !== "string" ||
+              !data.model.trim() ||
               typeof data.modelVersion !== "string" ||
+              !data.modelVersion.trim() ||
               typeof data.dimensions !== "number" ||
               !Number.isInteger(data.dimensions) ||
               data.dimensions <= 0 ||
@@ -137,47 +138,18 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
             event.data.modelVersion === expectedModel &&
             event.data.dimensions === expectedDimensions;
           if (!product || !isCurrentContent || !isCompatible) {
-            // Product đã xóa hoặc completion không còn khớp job hiện tại thì không được để job quay lại queue vô hạn.
-            if (!product || !isCurrentContent) {
-              await this.jobs.markSuperseded({
-                jobId: event.data.jobId,
-                productId: event.data.productId,
-                contentHash: event.data.contentHash,
-                modelVersion: event.data.modelVersion,
-                errorCode: !product
-                  ? "EMBEDDING_PRODUCT_NOT_FOUND"
-                  : "EMBEDDING_CONTENT_STALE",
-              });
-            }
-            // Completion cũ không được làm bẩn trạng thái của content mới; chỉ đánh dấu stale khi nó còn trỏ đúng content hiện tại.
-            if (product && isCurrentContent) {
-              await this.catalog.updateEmbeddingState(product.productId, {
-                status: "STALE",
-                modelVersion: event.data.modelVersion,
-                dimensions: event.data.dimensions,
-              });
-              // Tạo lại job theo model/dimension hiện tại để completion sai không khiến product mắc kẹt ở STALE vĩnh viễn.
-              await this.jobs.enqueue({
-                productId: product.productId,
-                contentHash: product.contentHash!,
-                embeddingProfile: "product-content-v1",
-                modelVersion: expectedModel,
-                textContent: this.semantic.toEmbeddingText({
-                  title: product.name,
-                  shortDescription: product.shortDescription,
-                  description: product.description,
-                  brandName: product.brandName,
-                  categoryPath: product.categoryPath,
-                  attributes: product.semanticAttributes,
-                  contentHash: product.contentHash!,
-                }),
-              });
-              await this.catalog.updateEmbeddingState(product.productId, {
-                status: "PENDING",
-                modelVersion: expectedModel,
-                dimensions: expectedDimensions,
-              });
-            }
+            // Completion cũ không được ghi đè content hiện tại; job tương ứng chỉ cần kết thúc ở trạng thái superseded.
+            await this.jobs.markSuperseded({
+              jobId: event.data.jobId,
+              productId: event.data.productId,
+              contentHash: event.data.contentHash,
+              modelVersion: event.data.modelVersion,
+              errorCode: !product
+                ? "EMBEDDING_PRODUCT_NOT_FOUND"
+                : !isCurrentContent
+                  ? "EMBEDDING_CONTENT_STALE"
+                  : "EMBEDDING_MODEL_STALE",
+            });
             await this.consumer.commitOffsets([
               { topic, partition, offset: getNextKafkaOffset(message.offset) },
             ]);
@@ -198,12 +170,31 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
             maxPrice: product.maxPrice,
             status: product.status,
             isInStock: product.isInStock,
+            embeddingStatus: "READY",
           });
-          await this.catalog.updateEmbeddingState(product.productId, {
-            status: "READY",
-            modelVersion: event.data.modelVersion,
-            dimensions: event.data.dimensions,
-          });
+          // Chỉ chuyển sang READY nếu contentHash chưa đổi trong lúc Qdrant đang xử lý.
+          const stateUpdated = await this.catalog.updateEmbeddingState(
+            product.productId,
+            {
+              status: "READY",
+              modelVersion: event.data.modelVersion,
+              dimensions: event.data.dimensions,
+            },
+            event.data.contentHash,
+          );
+          if (!stateUpdated) {
+            await this.jobs.markSuperseded({
+              jobId: event.data.jobId,
+              productId: event.data.productId,
+              contentHash: event.data.contentHash,
+              modelVersion: event.data.modelVersion,
+              errorCode: "EMBEDDING_CONTENT_STALE",
+            });
+            await this.consumer.commitOffsets([
+              { topic, partition, offset: getNextKafkaOffset(message.offset) },
+            ]);
+            return;
+          }
           await this.jobs.markCompleted({
             jobId: event.data.jobId,
             productId: event.data.productId,

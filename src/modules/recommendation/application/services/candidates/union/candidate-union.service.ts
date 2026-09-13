@@ -144,9 +144,10 @@ export class CandidateUnion {
 @Injectable()
 export class CandidateUnionService {
   create(excludedProductIds: string[], maxSize = 300): CandidateUnion {
+    const safeMaxSize = Number.isFinite(maxSize) ? Math.trunc(maxSize) : 300;
     return new CandidateUnion(
       new Set(excludedProductIds),
-      Math.min(Math.max(maxSize, 1), 300),
+      Math.min(Math.max(safeMaxSize, 1), 300),
     );
   }
 }

@@ -35,8 +35,48 @@ export class EmbeddingJobRepository {
        ON CONFLICT (product_id, content_hash, embedding_profile) DO UPDATE
        SET text_content = EXCLUDED.text_content,
            model_version = EXCLUDED.model_version,
-           status = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED', 'DISPATCHED', 'COMPLETED') OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version THEN 'PENDING' ELSE recommendation_embedding_jobs.status END,
-           available_at = CASE WHEN recommendation_embedding_jobs.status IN ('FAILED', 'SUPERSEDED', 'DISPATCHED', 'COMPLETED') OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version THEN now() ELSE recommendation_embedding_jobs.available_at END,
+           status = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN 'PENDING'
+             ELSE recommendation_embedding_jobs.status
+           END,
+           attempt_count = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN 0
+             ELSE recommendation_embedding_jobs.attempt_count
+           END,
+           leased_until = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN NULL
+             ELSE recommendation_embedding_jobs.leased_until
+           END,
+           available_at = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN now()
+             ELSE recommendation_embedding_jobs.available_at
+           END,
+           last_error_code = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN NULL
+             ELSE recommendation_embedding_jobs.last_error_code
+           END,
+           last_error_at = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN NULL
+             ELSE recommendation_embedding_jobs.last_error_at
+           END,
+           completed_at = CASE
+             WHEN recommendation_embedding_jobs.status = 'SUPERSEDED'
+               OR recommendation_embedding_jobs.model_version <> EXCLUDED.model_version
+               THEN NULL
+             ELSE recommendation_embedding_jobs.completed_at
+           END,
            updated_at = now()`,
       [
         input.productId,
@@ -52,18 +92,31 @@ export class EmbeddingJobRepository {
   async leaseBatch(
     limit: number,
     leaseSeconds: number,
+    maxAttempts = 8,
   ): Promise<RecommendationEmbeddingJobEntity[]> {
+    const safeMaxAttempts = Math.min(Math.max(Math.trunc(maxAttempts), 1), 100);
     await this.repository.query(
       `UPDATE recommendation_embedding_jobs
-          SET status = 'PENDING', leased_until = NULL, available_at = now(), updated_at = now()
-        WHERE status = 'PROCESSING' AND leased_until < now()`,
+          SET status = CASE WHEN attempt_count >= $1 THEN 'FAILED' ELSE 'PENDING' END,
+              leased_until = NULL,
+              available_at = CASE WHEN attempt_count >= $1 THEN available_at ELSE now() END,
+              last_error_code = CASE WHEN attempt_count >= $1 THEN 'EMBEDDING_PROCESSING_LEASE_EXPIRED' ELSE last_error_code END,
+              last_error_at = CASE WHEN attempt_count >= $1 THEN now() ELSE last_error_at END,
+              updated_at = now()
+        WHERE status = 'PROCESSING' AND leased_until IS NOT NULL AND leased_until < now()`,
+      [safeMaxAttempts],
     );
     // DISPATCHED có lease chờ generated event; hết lease thì phát lại để request không mắc vĩnh viễn.
     await this.repository.query(
       `UPDATE recommendation_embedding_jobs
-          SET status = 'PENDING', leased_until = NULL, available_at = now(),
-              last_error_code = 'EMBEDDING_ACK_TIMEOUT', last_error_at = now(), updated_at = now()
+          SET status = CASE WHEN attempt_count >= $1 THEN 'FAILED' ELSE 'PENDING' END,
+              leased_until = NULL,
+              available_at = CASE WHEN attempt_count >= $1 THEN available_at ELSE now() END,
+              last_error_code = 'EMBEDDING_ACK_TIMEOUT',
+              last_error_at = now(),
+              updated_at = now()
         WHERE status = 'DISPATCHED' AND leased_until IS NOT NULL AND leased_until < now()`,
+      [safeMaxAttempts],
     );
     return this.repository.query(
       `WITH claimed AS (

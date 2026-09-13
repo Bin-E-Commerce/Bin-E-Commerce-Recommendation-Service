@@ -17,6 +17,13 @@ export class CatalogProductRepository {
     private readonly repository: Repository<RecommendationCatalogProductEntity>,
   ) {}
 
+  // Mở transaction qua persistence boundary để application không inject trực tiếp DataSource/TypeORM connection.
+  async transaction<T>(
+    work: (manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    return this.repository.manager.transaction(work);
+  }
+
   // Upsert snapshot theo catalog version để event cũ không ghi đè dữ liệu mới hơn.
   async upsertIfNewer(
     product: Partial<RecommendationCatalogProduct> & { productId: string },
@@ -25,9 +32,15 @@ export class CatalogProductRepository {
     const current = await manager
       .getRepository(RecommendationCatalogProductEntity)
       .findOne({ where: { productId: product.productId } });
+    // Partial input chỉ được phép ghi đè field thực sự có giá trị;
+    // spread trực tiếp sẽ biến field undefined thành NULL và làm hỏng snapshot
+    // khi consumer xử lý event bổ sung hoặc replay payload cũ.
+    const providedFields = Object.fromEntries(
+      Object.entries(product).filter(([, value]) => value !== undefined),
+    );
     const snapshot = {
       ...current,
-      ...product,
+      ...providedFields,
       catalogVersion: product.catalogVersion ?? current?.catalogVersion ?? "1",
       semanticAttributes:
         product.semanticAttributes ?? current?.semanticAttributes ?? [],
@@ -110,15 +123,22 @@ export class CatalogProductRepository {
       modelVersion?: string | null;
       dimensions?: number | null;
     },
-  ): Promise<void> {
-    await this.repository.update(
-      { productId },
-      {
-        embeddingStatus: input.status,
-        embeddingModelVersion: input.modelVersion,
-        embeddingDimensions: input.dimensions,
-      },
-    );
+    expectedContentHash?: string,
+    manager: EntityManager = this.repository.manager,
+  ): Promise<boolean> {
+    const result = await manager
+      .getRepository(RecommendationCatalogProductEntity)
+      .update(
+        expectedContentHash
+          ? { productId, contentHash: expectedContentHash }
+          : { productId },
+        {
+          embeddingStatus: input.status,
+          embeddingModelVersion: input.modelVersion,
+          embeddingDimensions: input.dimensions,
+        },
+      );
+    return (result.affected ?? 0) > 0;
   }
 
   // Đọc snapshot hiện tại để completion consumer kiểm tra contentHash/model trước khi ghi vector.
@@ -126,6 +146,25 @@ export class CatalogProductRepository {
     productId: string,
   ): Promise<RecommendationCatalogProductEntity | null> {
     return this.repository.findOne({ where: { productId } });
+  }
+
+  // Đọc nhiều snapshot trong một query để semantic source không tạo N query cho các anchor gần đây.
+  async findSnapshots(
+    productIds: string[],
+  ): Promise<RecommendationCatalogProductEntity[]> {
+    const uniqueProductIds = [...new Set(productIds)].filter(Boolean);
+    if (uniqueProductIds.length === 0) return [];
+    const products = await this.repository.find({
+      where: { productId: In(uniqueProductIds) },
+    });
+    const position = new Map(
+      uniqueProductIds.map((productId, index) => [productId, index]),
+    );
+    return products.sort(
+      (left, right) =>
+        (position.get(left.productId) ?? Number.MAX_SAFE_INTEGER) -
+        (position.get(right.productId) ?? Number.MAX_SAFE_INTEGER),
+    );
   }
 
   // Đọc snapshot bằng transaction manager để catalog và embedding outbox dùng cùng một commit boundary.
@@ -146,9 +185,9 @@ export class CatalogProductRepository {
     const rows = (await this.repository.query(
       `UPDATE recommendation_catalog_products
           SET status = 'INACTIVE', is_in_stock = false,
-              catalog_version = COALESCE($2, catalog_version), updated_at = now()
+              catalog_version = COALESCE($2::bigint, catalog_version), updated_at = now()
         WHERE product_id = $1
-          AND ($2 IS NULL OR catalog_version <= $2)
+          AND ($2::bigint IS NULL OR catalog_version <= $2::bigint)
         RETURNING product_id`,
       [productId, catalogVersion ?? null],
     )) as Array<{ product_id: string }>;
@@ -182,7 +221,7 @@ export class CatalogProductRepository {
 
     return query
       .orderBy("product.total_sold", "DESC")
-      .limit(Math.min(options.limit ?? 50, 200))
+      .limit(this.normalizeLimit(options.limit ?? 50))
       .getMany();
   }
 
@@ -257,7 +296,7 @@ export class CatalogProductRepository {
       )
       .addOrderBy("product.total_sold", "DESC")
       .addOrderBy("product.product_id", "ASC")
-      .limit(Math.min(limit, 200))
+      .limit(this.normalizeLimit(limit))
       .getMany();
   }
 
@@ -278,10 +317,25 @@ export class CatalogProductRepository {
   async findByIds(
     productIds: string[],
   ): Promise<RecommendationCatalogProductEntity[]> {
-    if (productIds.length === 0) return [];
-    return this.repository.find({
-      where: { productId: In(productIds), status: "ACTIVE", isInStock: true },
+    const uniqueProductIds = [...new Set(productIds)].filter(Boolean);
+    if (uniqueProductIds.length === 0) return [];
+    const products = await this.repository.find({
+      where: {
+        productId: In(uniqueProductIds),
+        status: "ACTIVE",
+        isInStock: true,
+      },
     });
+    // TypeORM không đảm bảo thứ tự của IN (...); khôi phục thứ tự source để
+    // product affinity/semantic rank không bị đổi ngẫu nhiên khi hydrate card.
+    const position = new Map(
+      uniqueProductIds.map((productId, index) => [productId, index]),
+    );
+    return products.sort(
+      (left, right) =>
+        (position.get(left.productId) ?? Number.MAX_SAFE_INTEGER) -
+        (position.get(right.productId) ?? Number.MAX_SAFE_INTEGER),
+    );
   }
 
   // Dùng chung query ordered để mọi source áp dụng cùng active/stock/exclusion policy.
@@ -305,7 +359,14 @@ export class CatalogProductRepository {
     return query
       .orderBy(column, direction)
       .addOrderBy("product.product_id", "ASC")
-      .limit(Math.min(limit, 200))
+      .limit(this.normalizeLimit(limit))
       .getMany();
+  }
+
+  // Chuẩn hóa limit ở persistence boundary để NaN, số âm hoặc số quá lớn không làm hỏng SQL/source contract.
+  private normalizeLimit(value: number): number {
+    return Number.isFinite(value)
+      ? Math.min(Math.max(Math.trunc(value), 1), 200)
+      : 1;
   }
 }

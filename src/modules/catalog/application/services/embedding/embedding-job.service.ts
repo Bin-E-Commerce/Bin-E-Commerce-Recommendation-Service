@@ -24,7 +24,7 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
   ) {}
 
-  // Tạo hoặc réact một job theo content hash; caller đã commit catalog snapshot trước khi gọi hàm này.
+  // Tạo hoặc reactivate job theo content hash; manager tùy chọn cho phép catalog snapshot và outbox cùng transaction.
   async enqueueProduct(
     input: {
       productId: string;
@@ -54,7 +54,12 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
       return;
     this.timer = setInterval(
       () => void this.dispatch(),
-      this.readConfigNumber("EMBEDDING_DISPATCH_INTERVAL_MS", 1000, 250, 60_000),
+      this.readConfigNumber(
+        "EMBEDDING_DISPATCH_INTERVAL_MS",
+        1000,
+        250,
+        60_000,
+      ),
     );
     void this.dispatch();
   }
@@ -68,9 +73,16 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
     if (this.running) return;
     this.running = true;
     try {
+      const maxAttempts = this.readConfigNumber(
+        "EMBEDDING_JOB_MAX_ATTEMPTS",
+        8,
+        1,
+        100,
+      );
       const jobs = await this.jobs.leaseBatch(
         this.readConfigNumber("EMBEDDING_DISPATCH_BATCH_SIZE", 20, 1, 100),
         this.readConfigNumber("EMBEDDING_JOB_LEASE_SECONDS", 120, 10, 3600),
+        maxAttempts,
       );
       for (const job of jobs) {
         try {
@@ -101,19 +113,10 @@ export class EmbeddingJobService implements OnModuleInit, OnModuleDestroy {
             10,
             86_400,
           );
-          await this.jobs.markDispatched(
-            job.jobId,
-            acknowledgementTimeout,
-          );
+          await this.jobs.markDispatched(job.jobId, acknowledgementTimeout);
         } catch (error) {
           const errorCode =
             error instanceof Error ? error.name : "PUBLISH_FAILED";
-          const maxAttempts = this.readConfigNumber(
-            "EMBEDDING_JOB_MAX_ATTEMPTS",
-            8,
-            1,
-            100,
-          );
           if (job.attemptCount >= maxAttempts) {
             await this.jobs.markFailed(job.jobId, errorCode);
           } else {

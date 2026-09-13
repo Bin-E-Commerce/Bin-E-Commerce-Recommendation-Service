@@ -6,14 +6,17 @@ describe("SemanticCandidateService", () => {
   it("should build a weighted centroid from recent interaction signals", async () => {
     // Arrange
     const vector = {
-      getProductVector: jest.fn(async (productId: string) =>
-        productId === "product-a" ? [1, 0] : [0, 1],
-      ),
+      getProductVector: jest.fn(async (productId: string) => ({
+        vector: productId === "product-a" ? [1, 0] : [0, 1],
+        contentHash: `hash-${productId}`,
+        modelVersion: "model-v1",
+      })),
       searchSimilarProducts: jest.fn(async () => [
         {
           productId: "product-c",
           similarityScore: 0.9,
           modelVersion: "model-v1",
+          contentHash: "hash-product-c",
         },
       ]),
     };
@@ -25,9 +28,18 @@ describe("SemanticCandidateService", () => {
           : fallback,
       ),
     };
+    const catalog = {
+      findSnapshots: jest.fn(async (productIds: string[]) =>
+        productIds.map((productId) => ({
+          productId,
+          contentHash: `hash-${productId}`,
+        })),
+      ),
+    };
     const service = new SemanticCandidateService(
       vector as never,
       config as never,
+      catalog as never,
     );
 
     // Act
@@ -76,9 +88,11 @@ describe("SemanticCandidateService", () => {
           : fallback,
       ),
     };
+    const catalog = { findSnapshots: jest.fn(async () => []) };
     const service = new SemanticCandidateService(
       vector as never,
       config as never,
+      catalog as never,
     );
 
     // Act

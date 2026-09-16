@@ -162,7 +162,7 @@ export class AdminRecommendationController {
     description: [
       "Mục đích: cho Admin xem cấu hình mà Recommendation Service hiện đang dùng để xếp hạng sản phẩm.",
       "Đầu vào: không có query hoặc body.",
-      "Kết quả: version và trạng thái policy cùng hybridWeights của Standard Ranking, cờ mlEnabled, mlBlend, người cập nhật, lý do và thời điểm. Nếu chưa lưu policy trong database, trả cấu hình runtime mặc định hiện tại.",
+      "Kết quả: version và trạng thái policy cùng hybridWeights của Standard Ranking, cấu hình AI, traffic rollout, candidate sources, trạng thái model, người cập nhật, lý do và thời điểm. Nếu chưa lưu policy trong database, trả cấu hình runtime mặc định hiện tại.",
       "Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_READ.",
     ].join("\n\n"),
   })
@@ -191,7 +191,7 @@ export class AdminRecommendationController {
     summary: "Cập nhật policy ranking",
     description: [
       "Mục đích: thay đổi trọng số Standard Ranking hoặc cấu hình AI-Enhanced Ranking đang áp dụng.",
-      "Đầu vào: body patch có thể gồm hybridWeights, mlEnabled, mlBlend (0–0.5) và reason. Có thể chỉ gửi phần muốn đổi; các giá trị không gửi sẽ được giữ nguyên. Actor cập nhật được lấy từ trusted x-user-id header.",
+      "Đầu vào: body patch có thể gồm hybridWeights, mlEnabled, mlBlend (0–0.5), experimentEnabled, trafficPercent (0–100), candidateSources và reason. Có thể chỉ gửi phần muốn đổi; các giá trị không gửi sẽ được giữ nguyên. Actor cập nhật được lấy từ trusted x-user-id header.",
       "Xử lý và kết quả: backend kiểm tra key/trọng số, chuẩn hóa tổng trọng số, lưu một version policy mới rồi cập nhật runtime; response trả version, config và metadata lưu.",
       "Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_WRITE. Cấu hình sai hoặc tổng trọng số không hợp lệ bị từ chối, không thay policy đang chạy.",
     ].join("\n\n"),

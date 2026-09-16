@@ -95,4 +95,55 @@ describe("RecommendationRuleService", () => {
       "0.25",
     );
   });
+
+  it("should combine runtime candidate policy with environment master switches", () => {
+    // Arrange
+    const config = {
+      get: jest.fn(
+        (key: string, fallback?: string) =>
+          ({
+            CANDIDATE_PIPELINE_V3_ENABLED: "true",
+            SEMANTIC_CANDIDATES_ENABLED: "true",
+            CO_BEHAVIOR_CANDIDATES_ENABLED: "false",
+          })[key] ?? fallback,
+      ),
+    } as unknown as ConfigService;
+    target = new RecommendationRuleService(config);
+    target.setRuntimePolicy({
+      version: "policy-v2",
+      candidateSources: {
+        semanticEnabled: true,
+        coBehaviorEnabled: true,
+      },
+    });
+
+    // Act
+    const status = target.getCandidateSourceStatus();
+
+    // Assert
+    expect(status.semanticEnabled).toBe(true);
+    expect(status.coBehaviorEnabled).toBe(false);
+    expect(status.coBehaviorPolicyEnabled).toBe(true);
+    expect(status.coBehaviorMasterEnabled).toBe(false);
+  });
+
+  it("should read experiment rollout controls from runtime policy", () => {
+    // Arrange
+    const config = {
+      get: jest.fn((_key: string, fallback?: string) => fallback),
+    } as unknown as ConfigService;
+    target = new RecommendationRuleService(config);
+    target.setRuntimePolicy({
+      version: "policy-v3",
+      experimentEnabled: true,
+      trafficPercent: 35,
+    });
+
+    // Act
+    const snapshot = target.getPolicySnapshot();
+
+    // Assert
+    expect(snapshot.experimentEnabled).toBe(true);
+    expect(snapshot.trafficPercent).toBe(35);
+  });
 });

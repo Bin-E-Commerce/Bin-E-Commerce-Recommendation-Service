@@ -52,12 +52,21 @@ export class AdminRecommendationBootstrapService
         hybridWeights?: Record<string, number>;
         mlEnabled?: boolean;
         mlBlend?: number;
+        experimentEnabled?: boolean;
+        trafficPercent?: number;
+        candidateSources?: {
+          semanticEnabled?: boolean;
+          coBehaviorEnabled?: boolean;
+        };
       };
       this.rules.setRuntimePolicy({
         version: active.version,
         hybridWeights: config.hybridWeights,
         mlEnabled: config.mlEnabled,
         mlBlend: config.mlBlend,
+        experimentEnabled: config.experimentEnabled,
+        trafficPercent: config.trafficPercent,
+        candidateSources: config.candidateSources,
       });
     } catch (error) {
       // Policy đang chạy vẫn hợp lệ; lần poll kế tiếp sẽ tự retry khi DB tạm thời unavailable.

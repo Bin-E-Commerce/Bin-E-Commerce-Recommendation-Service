@@ -116,6 +116,10 @@ export class RecommendationQueryService {
       ...cached,
       requestId,
       generatedAt: new Date().toISOString(),
+      // Cache cũ có thể chưa có field rankingMode; suy luận an toàn từ model version để response contract luôn đầy đủ.
+      rankingMode:
+        cached.rankingMode ??
+        (cached.rankingModelVersion ? "ML_HYBRID" : "HYBRID"),
       rankingModelVersion: cached.rankingModelVersion ?? null,
       items: cached.items.map((item) => ({
         ...item,
@@ -278,6 +282,7 @@ export class RecommendationQueryService {
       generatedAt: new Date().toISOString(),
       ruleVersion: this.ranking.getRuleVersion(),
       rankingPolicyVersion: this.ranking.getPolicyVersion(servingMode),
+      rankingMode: servingMode,
       rankingModelVersion: mlResult.modelVersion,
       experiment: servingExperiment.id
         ? { id: servingExperiment.id, variant: servingExperiment.variant }

@@ -35,6 +35,14 @@ export interface RecommendationMlRankingResult {
   modelVersion: string | null;
 }
 
+export interface RecommendationMlRankingStatus {
+  ready: boolean;
+  fallback: boolean;
+  modelVersion: string | null;
+  featureCount: number | null;
+  reachable: boolean;
+}
+
 @Injectable()
 export class RecommendationMlRankingService {
   private readonly logger = new Logger(RecommendationMlRankingService.name);
@@ -58,6 +66,61 @@ export class RecommendationMlRankingService {
       Number.isInteger(configuredTimeout) && configuredTimeout > 0
         ? Math.min(configuredTimeout, 1000)
         : 150;
+  }
+
+  // Đọc trạng thái model qua boundary nội bộ để Admin phân biệt policy đã bật với AI thật sự đang phục vụ.
+  async getStatus(): Promise<RecommendationMlRankingStatus> {
+    if (!this.token) {
+      return {
+        ready: false,
+        fallback: true,
+        modelVersion: null,
+        featureCount: null,
+        reachable: false,
+      };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/ranking/status`, {
+        headers: { "x-internal-service-token": this.token },
+        signal: controller.signal,
+      });
+      if (!response.ok)
+        throw new Error(`AI_RANKING_STATUS_HTTP_${response.status}`);
+      const payload = (await response.json()) as {
+        ready?: unknown;
+        fallback?: unknown;
+        modelVersion?: unknown;
+        featureCount?: unknown;
+      };
+      return {
+        ready: payload.ready === true,
+        fallback: payload.fallback === true,
+        modelVersion:
+          typeof payload.modelVersion === "string"
+            ? payload.modelVersion
+            : null,
+        featureCount:
+          typeof payload.featureCount === "number"
+            ? payload.featureCount
+            : null,
+        reachable: true,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `ML ranking status unavailable: ${this.errorMessage(error)}`,
+      );
+      return {
+        ready: false,
+        fallback: true,
+        modelVersion: null,
+        featureCount: null,
+        reachable: false,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // Gọi batch prediction fail-soft để recommendation vẫn trả Hybrid score khi AI Service timeout, lỗi schema hoặc chưa có model.

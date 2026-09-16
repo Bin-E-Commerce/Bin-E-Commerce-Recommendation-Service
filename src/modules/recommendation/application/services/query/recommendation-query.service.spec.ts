@@ -1,4 +1,5 @@
 // Unit test bảo vệ mode Standard/AI-Enhanced và attribution khi ML fallback.
+/// <reference types="jest" />
 
 import { Test, type TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
@@ -143,6 +144,7 @@ describe("RecommendationQueryService", () => {
     // Assert
     expect(result).toMatchObject({
       rankingPolicyVersion: "HYBRID",
+      rankingMode: "HYBRID",
       rankingModelVersion: null,
       experiment: null,
       items: [

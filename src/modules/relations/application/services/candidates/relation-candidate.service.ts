@@ -1,16 +1,16 @@
 import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   RelationRepository,
   type RelationType,
 } from "../../../infrastructure/repositories/relation.repository";
+import { RecommendationRuleService } from "../../../../profiles/application/services/rules/recommendation-rule.service";
 
 // Adapter candidate co-behavior, tách khỏi profile projection và fail-soft khi relation read model chưa có dữ liệu.
 @Injectable()
 export class RelationCandidateService {
   constructor(
     private readonly repository: RelationRepository,
-    private readonly config: ConfigService,
+    private readonly rules: RecommendationRuleService,
   ) {}
 
   // Lấy target từ recent/profile anchors để bổ sung candidate cho Standard Ranking.
@@ -26,13 +26,7 @@ export class RelationCandidateService {
       relationType: RelationType;
     }>
   > {
-    if (
-      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "false") !==
-        "true" ||
-      this.config.get<string>("CO_BEHAVIOR_CANDIDATES_ENABLED", "false") !==
-        "true"
-    )
-      return [];
+    if (!this.rules.isCandidateSourceEnabled("coBehavior")) return [];
     try {
       const excluded = new Set(excludeProductIds);
       return (

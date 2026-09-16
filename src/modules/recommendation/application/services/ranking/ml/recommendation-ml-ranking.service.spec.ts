@@ -136,4 +136,43 @@ describe("RecommendationMlRankingService", () => {
     expect(result.scores).toEqual(new Map());
     expect(result.modelVersion).toBeNull();
   });
+
+  it("should expose the ready model status for Admin policy UI", async () => {
+    // Arrange
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ready: true,
+        fallback: false,
+        modelVersion: "ranking-lgbm-v1",
+        featureCount: 9,
+      }),
+    } as Response);
+
+    // Act
+    const result = await target.getStatus();
+
+    // Assert
+    expect(result).toEqual({
+      ready: true,
+      fallback: false,
+      modelVersion: "ranking-lgbm-v1",
+      featureCount: 9,
+      reachable: true,
+    });
+  });
+
+  it("should report an unreachable AI service as fallback", async () => {
+    // Arrange
+    jest.spyOn(global, "fetch").mockRejectedValue(new Error("timeout"));
+
+    // Act
+    const result = await target.getStatus();
+
+    // Assert
+    expect(result.ready).toBe(false);
+    expect(result.fallback).toBe(true);
+    expect(result.reachable).toBe(false);
+    expect(result.modelVersion).toBeNull();
+  });
 });

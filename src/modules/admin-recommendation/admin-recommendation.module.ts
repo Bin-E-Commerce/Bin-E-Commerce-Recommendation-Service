@@ -12,11 +12,13 @@ import { AdminRecommendationBootstrapService } from "./application/services/admi
 import { RecommendationAdminRepository } from "./infrastructure/repositories/recommendation-admin.repository";
 import { RecommendationAdminInternalGuard } from "./presentation/guards/recommendation-admin-internal.guard";
 import { RecommendationAccountDirectoryClient } from "./infrastructure/clients/recommendation-account-directory.client";
+import { RecommendationModule } from "../recommendation/recommendation.module";
 
 @Module({
   imports: [
     CatalogModule,
     ProfilesModule,
+    RecommendationModule,
     TypeOrmModule.forFeature([
       RecommendationInteractionEntity,
       RecommendationPolicyEntity,

@@ -3,6 +3,7 @@
 import { Test, type TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { createMock, type DeepMocked } from "@golevelup/ts-jest";
+import { RecommendationRuleService } from "../../../../../profiles/application/services/rules/recommendation-rule.service";
 import { RankingExperimentService } from "./ranking-experiment.service";
 
 class MockLoggerService {
@@ -17,13 +18,16 @@ class MockLoggerService {
 describe("RankingExperimentService", () => {
   let target: RankingExperimentService;
   let mockConfigService: DeepMocked<ConfigService>;
+  let mockRules: DeepMocked<RecommendationRuleService>;
 
   beforeEach(async () => {
     mockConfigService = createMock<ConfigService>();
+    mockRules = createMock<RecommendationRuleService>();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RankingExperimentService,
         { provide: ConfigService, useValue: mockConfigService },
+        { provide: RecommendationRuleService, useValue: mockRules },
       ],
     })
       .setLogger(new MockLoggerService())
@@ -61,6 +65,8 @@ describe("RankingExperimentService", () => {
         return (values[key] ?? fallback) as never;
       },
     );
+    mockRules.getExperimentEnabled.mockReturnValue(true);
+    mockRules.getExperimentTrafficPercent.mockReturnValue(50);
 
     // Act
     const first = target.resolve("USER", "user-1");
@@ -83,6 +89,8 @@ describe("RankingExperimentService", () => {
         return (values[key] ?? fallback) as never;
       },
     );
+    mockRules.getExperimentEnabled.mockReturnValue(true);
+    mockRules.getExperimentTrafficPercent.mockReturnValue(100);
 
     // Act
     const result = target.resolve("USER", "user-100");
@@ -103,6 +111,8 @@ describe("RankingExperimentService", () => {
         return (values[key] ?? fallback) as never;
       },
     );
+    mockRules.getExperimentEnabled.mockReturnValue(true);
+    mockRules.getExperimentTrafficPercent.mockReturnValue(50);
 
     // Act
     const variants = Array.from(

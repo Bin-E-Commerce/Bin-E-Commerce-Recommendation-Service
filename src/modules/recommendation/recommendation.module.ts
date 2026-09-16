@@ -29,6 +29,6 @@ import { RecommendationMlRankingService } from "./application/services/ranking/m
     RecommendationTrackingTokenService,
     RecommendationMlRankingService,
   ],
-  exports: [RecommendationTrackingTokenService],
+  exports: [RecommendationTrackingTokenService, RecommendationMlRankingService],
 })
 export class RecommendationModule {}

@@ -1,17 +1,17 @@
 // File này tạo semantic candidates từ vector index; không gọi AI provider trong request và không thay đổi final ranking.
 
 import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { CatalogService } from "../../../../../catalog/application/services/catalog/catalog.service";
 import { VectorIndexService } from "../../../../../catalog/application/services/vector/vector-index.service";
+import { RecommendationRuleService } from "../../../../../profiles/application/services/rules/recommendation-rule.service";
 
 // Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để Standard Ranking tiếp tục với nguồn khác.
 @Injectable()
 export class SemanticCandidateService {
   constructor(
     private readonly vector: VectorIndexService,
-    private readonly config: ConfigService,
     private readonly catalog: CatalogService,
+    private readonly rules: RecommendationRuleService,
   ) {}
 
   // Tạo centroid ngắn hạn từ anchor product gần đây rồi hydrate card bằng catalog read model cục bộ.
@@ -35,12 +35,7 @@ export class SemanticCandidateService {
       contentHash: string;
     }>
   > {
-    if (
-      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "false") !==
-        "true" ||
-      this.config.get<string>("SEMANTIC_CANDIDATES_ENABLED", "false") !== "true"
-    )
-      return [];
+    if (!this.rules.isCandidateSourceEnabled("semantic")) return [];
     try {
       const anchorWeights = new Map<string, number>();
       const addAnchor = (id: string | undefined, weight: number): void => {

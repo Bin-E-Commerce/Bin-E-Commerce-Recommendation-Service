@@ -2,12 +2,16 @@
 
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { RecommendationRuleService } from "../../../../../profiles/application/services/rules/recommendation-rule.service";
 
 export type RankingExperimentVariant = "HYBRID" | "ML_HYBRID";
 
 @Injectable()
 export class RankingExperimentService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly rules: RecommendationRuleService,
+  ) {}
 
   // Giữ actor ở cùng variant giữa các request để metrics không bị nhiễu bởi random assignment.
   resolve(
@@ -17,17 +21,12 @@ export class RankingExperimentService {
     id: string | null;
     variant: RankingExperimentVariant;
   } {
-    const enabled =
-      this.config.get<string>("RANKING_EXPERIMENT_ENABLED", "false") === "true";
+    const enabled = this.rules.getExperimentEnabled();
     const experimentId = this.config.get<string>(
       "RANKING_EXPERIMENT_ID",
       "recommendation-standard-ai-v1",
     );
-    const traffic = this.clampPercent(
-      Number(
-        this.config.get<string>("RANKING_EXPERIMENT_TRAFFIC_PERCENT", "0"),
-      ),
-    );
+    const traffic = this.clampPercent(this.rules.getExperimentTrafficPercent());
     if (!enabled || traffic === 0) return { id: null, variant: "HYBRID" };
     const bucket = this.hash(`${experimentId}:${actorType}:${actorId}`) % 100;
     // Standard là baseline cố định; traffic trong ngưỡng chỉ được gán AI sau khi rollout được bật.

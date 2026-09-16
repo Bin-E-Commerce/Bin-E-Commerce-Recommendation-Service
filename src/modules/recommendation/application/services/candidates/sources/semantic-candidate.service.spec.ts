@@ -20,14 +20,7 @@ describe("SemanticCandidateService", () => {
         },
       ]),
     };
-    const config = {
-      get: jest.fn((key: string, fallback?: string) =>
-        key === "CANDIDATE_PIPELINE_V3_ENABLED" ||
-        key === "SEMANTIC_CANDIDATES_ENABLED"
-          ? "true"
-          : fallback,
-      ),
-    };
+    const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
     const catalog = {
       findSnapshots: jest.fn(async (productIds: string[]) =>
         productIds.map((productId) => ({
@@ -38,8 +31,8 @@ describe("SemanticCandidateService", () => {
     };
     const service = new SemanticCandidateService(
       vector as never,
-      config as never,
       catalog as never,
+      rules as never,
     );
 
     // Act
@@ -80,19 +73,12 @@ describe("SemanticCandidateService", () => {
       getProductVector: jest.fn(async () => [1, 0]),
       searchSimilarProducts: jest.fn(async () => []),
     };
-    const config = {
-      get: jest.fn((key: string, fallback?: string) =>
-        key === "CANDIDATE_PIPELINE_V3_ENABLED" ||
-        key === "SEMANTIC_CANDIDATES_ENABLED"
-          ? "true"
-          : fallback,
-      ),
-    };
+    const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
     const catalog = { findSnapshots: jest.fn(async () => []) };
     const service = new SemanticCandidateService(
       vector as never,
-      config as never,
       catalog as never,
+      rules as never,
     );
 
     // Act

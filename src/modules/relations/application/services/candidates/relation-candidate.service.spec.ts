@@ -1,27 +1,21 @@
 // Unit test cho cờ bật co-behavior, giới hạn anchor và fallback khi relation store lỗi.
 /// <reference types="jest" />
 
-import { ConfigService } from "@nestjs/config";
 import { createMock, type DeepMocked } from "@golevelup/ts-jest";
 import { RelationRepository } from "../../../infrastructure/repositories/relation.repository";
+import { RecommendationRuleService } from "../../../../profiles/application/services/rules/recommendation-rule.service";
 import { RelationCandidateService } from "./relation-candidate.service";
 
 describe("RelationCandidateService", () => {
   let target: RelationCandidateService;
   let mockRepository: DeepMocked<RelationRepository>;
-  let mockConfig: DeepMocked<ConfigService>;
+  let mockRules: DeepMocked<RecommendationRuleService>;
 
   beforeEach(() => {
     mockRepository = createMock<RelationRepository>();
-    mockConfig = createMock<ConfigService>();
-    mockConfig.get.mockImplementation((key: string, fallback?: unknown) => {
-      const values: Record<string, string> = {
-        CANDIDATE_PIPELINE_V3_ENABLED: "true",
-        CO_BEHAVIOR_CANDIDATES_ENABLED: "true",
-      };
-      return (values[key] ?? fallback) as never;
-    });
-    target = new RelationCandidateService(mockRepository, mockConfig);
+    mockRules = createMock<RecommendationRuleService>();
+    mockRules.isCandidateSourceEnabled.mockReturnValue(true);
+    target = new RelationCandidateService(mockRepository, mockRules);
   });
 
   afterEach(() => {
@@ -71,10 +65,7 @@ describe("RelationCandidateService", () => {
 
   it("should skip the relation query when a candidate flag is disabled", async () => {
     // Arrange
-    mockConfig.get.mockImplementation(
-      (key: string) =>
-        (key === "CANDIDATE_PIPELINE_V3_ENABLED" ? "true" : "false") as never,
-    );
+    mockRules.isCandidateSourceEnabled.mockReturnValue(false);
 
     // Act
     const result = await target.findCandidates(["anchor-1"], [], 10);

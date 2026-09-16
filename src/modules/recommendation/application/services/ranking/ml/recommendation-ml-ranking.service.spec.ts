@@ -1,4 +1,5 @@
 // Unit test bảo vệ fail-soft của AI adapter khi model lỗi hoặc chỉ là fallback placeholder.
+/// <reference types="jest" />
 
 import { Test, type TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
@@ -126,6 +127,35 @@ describe("RecommendationMlRankingService", () => {
     const result = await target.predict({
       requestId: "request-1",
       candidates: [candidate],
+      products: [],
+      categories: [],
+      brands: [],
+      context: null,
+    });
+
+    // Assert
+    expect(result.scores).toEqual(new Map());
+    expect(result.modelVersion).toBeNull();
+  });
+
+  it("should fallback when the model returns an incomplete batch", async () => {
+    // Arrange
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        modelVersion: "ranking-lgbm-v1",
+        predictions: [{ itemId: "product-1", score: 0.95 }],
+      }),
+    } as Response);
+    const candidates = [
+      { product: { productId: "product-1" }, sources: new Set(["TRENDING"]) },
+      { product: { productId: "product-2" }, sources: new Set(["NEWEST"]) },
+    ] as RecommendationCandidate[];
+
+    // Act
+    const result = await target.predict({
+      requestId: "request-1",
+      candidates,
       products: [],
       categories: [],
       brands: [],

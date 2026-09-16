@@ -125,7 +125,7 @@ export class RecommendationInteractionEntity {
   @Column({ type: "varchar", length: 32, nullable: true })
   surface!: string | null;
 
-  // Version policy đã tạo recommendation; dùng để phân tách metrics giữa control và hybrid.
+  // Legacy version policy dùng cho attribution lịch sử; không còn dùng để chia control/treatment runtime.
   @Column({
     name: "recommendation_policy_version",
     type: "varchar",

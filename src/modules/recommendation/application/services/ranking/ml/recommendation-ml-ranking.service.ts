@@ -192,13 +192,17 @@ export class RecommendationMlRankingService {
         if (scores.has(itemId)) throw new Error("AI_RANKING_DUPLICATE_ITEM");
         scores.set(itemId, this.clamp(prediction.score));
       }
+      // Prediction phải đủ cho toàn bộ batch; response thiếu item hoặc chứa item lạ là invalid và phải fallback toàn batch.
+      if (scores.size !== candidates.length) {
+        throw new Error("AI_RANKING_INCOMPLETE_RESPONSE");
+      }
       const modelVersion =
         typeof payload.modelVersion === "string" &&
         payload.modelVersion.trim().length > 0
           ? payload.modelVersion.trim()
           : null;
       // AI Service có thể trả deterministic fallback khi chưa load LightGBM;
-      // fallback này không được tính là ML treatment hoặc blend vào ranking thật.
+      // fallback này không được tính là AI ranking hoặc blend vào ranking thật.
       if (modelVersion?.startsWith("ranking-fallback")) {
         return {
           scores: new Map(),

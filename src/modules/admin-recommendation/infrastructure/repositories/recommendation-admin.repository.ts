@@ -60,13 +60,13 @@ export class RecommendationAdminRepository {
       .andWhere("interaction.occurred_at < :to", { to })
       .andWhere("interaction.recommendation_request_id IS NOT NULL");
     // Activity timeline không lọc attribution để các event view/remove trực tiếp vẫn xuất hiện trong Admin.
-    // Các KPI đánh giá recommendation bên trên vẫn dùng base có attribution để không làm sai CTR và A/B.
+    // Các KPI đánh giá recommendation bên trên vẫn dùng base có attribution để không lẫn event ngoài recommendation.
     const activityBase = this.interactions
       .createQueryBuilder("interaction")
       .where("interaction.occurred_at >= :from", { from })
       .andWhere("interaction.occurred_at < :to", { to });
     // Tách tổng cart add khỏi base recommendation-attributed để dashboard không báo 0
-    // khi user thêm trực tiếp từ product detail; CTR và A/B vẫn chỉ dùng event có attribution.
+    // khi user thêm trực tiếp từ product detail; CTR vẫn chỉ dùng event có attribution.
     const [
       aggregate,
       totalCartAdds,
@@ -507,12 +507,11 @@ export class RecommendationAdminRepository {
     });
   }
 
-  // Aggregate A/B attribution theo experiment và variant để Admin đánh giá trước khi thay traffic.
-  async getExperiments(from: Date, to: Date) {
+  // Aggregate attribution theo ranking mode thực tế để Admin đo kết quả đã phục vụ, không phụ thuộc actor assignment.
+  async getRankingPerformance(from: Date, to: Date) {
     const rows = await this.interactions
       .createQueryBuilder("interaction")
-      .select("interaction.recommendation_experiment_id", "experimentId")
-      .addSelect("interaction.recommendation_experiment_variant", "variant")
+      .select("interaction.recommendation_experiment_variant", "rankingMode")
       .addSelect("COUNT(*)", "events")
       .addSelect(
         "COUNT(*) FILTER (WHERE interaction.interaction_type = 'PRODUCT_IMPRESSED')",
@@ -528,23 +527,19 @@ export class RecommendationAdminRepository {
       )
       .where("interaction.occurred_at >= :from", { from })
       .andWhere("interaction.occurred_at < :to", { to })
-      .andWhere("interaction.recommendation_experiment_id IS NOT NULL")
-      .groupBy("interaction.recommendation_experiment_id")
-      .addGroupBy("interaction.recommendation_experiment_variant")
-      // Alias camelCase phải được quote; nếu không PostgreSQL sẽ tìm experimentid viết thường.
-      .orderBy('"experimentId"', "ASC")
-      .addOrderBy("variant", "ASC")
+      .andWhere("interaction.recommendation_request_id IS NOT NULL")
+      .andWhere("interaction.recommendation_experiment_variant IS NOT NULL")
+      .groupBy("interaction.recommendation_experiment_variant")
+      .orderBy('"rankingMode"', "ASC")
       .getRawMany<{
-        experimentId: string;
-        variant: string;
+        rankingMode: string;
         events: string;
         impressions: string;
         clicks: string;
         cartAdds: string;
       }>();
     return rows.map((row) => ({
-      experimentId: row.experimentId,
-      variant: row.variant,
+      rankingMode: row.rankingMode,
       events: Number(row.events),
       impressions: Number(row.impressions),
       clicks: Number(row.clicks),

@@ -9,13 +9,13 @@ import { ProfileQueryService } from "../../../../profiles/application/services/p
 import { SessionContextService } from "../../../../profiles/application/services/session/session-context.service";
 import { CandidateGenerationService } from "../candidates/generation/candidate-generation.service";
 import { CandidateUnionService } from "../candidates/union/candidate-union.service";
-import { RankingExperimentService } from "../ranking/experiments/ranking-experiment.service";
 import { RecommendationMlRankingService } from "../ranking/ml/recommendation-ml-ranking.service";
 import { RecommendationRankingService } from "../ranking/policy/recommendation-ranking.service";
 import { RecommendationTrackingTokenService } from "../tracking/attribution/recommendation-tracking-token.service";
 import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
 import type { RecommendationCandidate } from "../../types/ranking/ranking.types";
 import { RecommendationQueryService } from "./recommendation-query.service";
+import { CatalogService } from "../../../../catalog/application/services/catalog/catalog.service";
 
 class MockLoggerService {
   log(): void {}
@@ -34,9 +34,9 @@ describe("RecommendationQueryService", () => {
   let mockRanking: DeepMocked<RecommendationRankingService>;
   let mockUnionFactory: DeepMocked<CandidateUnionService>;
   let mockCandidates: DeepMocked<CandidateGenerationService>;
-  let mockExperiment: DeepMocked<RankingExperimentService>;
   let mockTrackingToken: DeepMocked<RecommendationTrackingTokenService>;
   let mockMlRanking: DeepMocked<RecommendationMlRankingService>;
+  let mockCatalog: DeepMocked<CatalogService>;
   let mockUnion: { add: jest.Mock; values: jest.Mock };
   let candidate: RecommendationCandidate;
 
@@ -47,9 +47,10 @@ describe("RecommendationQueryService", () => {
     mockRanking = createMock<RecommendationRankingService>();
     mockUnionFactory = createMock<CandidateUnionService>();
     mockCandidates = createMock<CandidateGenerationService>();
-    mockExperiment = createMock<RankingExperimentService>();
     mockTrackingToken = createMock<RecommendationTrackingTokenService>();
     mockMlRanking = createMock<RecommendationMlRankingService>();
+    mockCatalog = createMock<CatalogService>();
+    mockCatalog.findSnapshots.mockResolvedValue([]);
 
     const product: RecommendationCatalogProduct = {
       productId: "product-1",
@@ -91,10 +92,6 @@ describe("RecommendationQueryService", () => {
     mockProfile.getTop.mockResolvedValue([]);
     mockRedis.getVersion.mockResolvedValue(1);
     mockRedis.getJson.mockResolvedValue(null);
-    mockExperiment.resolve.mockReturnValue({
-      id: "recommendation-standard-ai-v1",
-      variant: "ML_HYBRID",
-    });
     mockRanking.isMlRankingEnabled.mockReturnValue(true);
     mockRanking.getPolicyVersion.mockImplementation((mode) => mode);
     mockRanking.getRuleVersion.mockReturnValue("standard-ranking-v1");
@@ -116,12 +113,12 @@ describe("RecommendationQueryService", () => {
         { provide: RecommendationRankingService, useValue: mockRanking },
         { provide: CandidateUnionService, useValue: mockUnionFactory },
         { provide: CandidateGenerationService, useValue: mockCandidates },
-        { provide: RankingExperimentService, useValue: mockExperiment },
         {
           provide: RecommendationTrackingTokenService,
           useValue: mockTrackingToken,
         },
         { provide: RecommendationMlRankingService, useValue: mockMlRanking },
+        { provide: CatalogService, useValue: mockCatalog },
       ],
     })
       .setLogger(new MockLoggerService())
@@ -146,7 +143,6 @@ describe("RecommendationQueryService", () => {
       rankingPolicyVersion: "HYBRID",
       rankingMode: "HYBRID",
       rankingModelVersion: null,
-      experiment: null,
       items: [
         {
           product: { id: "product-1" },
@@ -164,13 +160,12 @@ describe("RecommendationQueryService", () => {
       expect.objectContaining({ mode: "HYBRID" }),
     );
     expect(mockTrackingToken.create).toHaveBeenCalledWith(
-      expect.objectContaining({ experimentId: null, experimentVariant: null }),
+      expect.objectContaining({ rankingMode: "HYBRID" }),
     );
   });
 
-  it("should not request AI when the actor is assigned Standard Ranking", async () => {
+  it("should not request AI when AI ranking is disabled", async () => {
     // Arrange
-    mockExperiment.resolve.mockReturnValue({ id: null, variant: "HYBRID" });
     mockRanking.isMlRankingEnabled.mockReturnValue(false);
     const input = { surface: "home" as const, page: 1, pageSize: 24 };
 
@@ -178,7 +173,6 @@ describe("RecommendationQueryService", () => {
     const result = await target.getRecommendations(input, "user-1", null);
 
     // Assert
-    expect(result.experiment).toBeNull();
     expect(mockMlRanking.predict).not.toHaveBeenCalled();
     expect(mockRanking.rank).toHaveBeenCalledWith(
       [candidate],
@@ -188,6 +182,61 @@ describe("RecommendationQueryService", () => {
       null,
       "COLD_START",
       expect.objectContaining({ mode: "HYBRID" }),
+    );
+  });
+
+  // Đảm bảo home vẫn dùng ba sản phẩm gần đây làm anchor dù không loại chúng khỏi candidate pool.
+  it("should keep recent products as anchors instead of excluding them on home", async () => {
+    // Arrange
+    mockSession.get.mockResolvedValue({
+      recentProductIds: ["recent-1", "recent-2", "recent-3"],
+      recentProductSignals: [],
+      recentCategoryIds: [],
+      recentBrandIds: [],
+    } as never);
+    const input = { surface: "home" as const, page: 1, pageSize: 24 };
+
+    // Act
+    await target.getRecommendations(input, null, "session-1");
+
+    // Assert
+    expect(mockCandidates.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        excludedProductIds: [],
+        recentProductIds: ["recent-1", "recent-2", "recent-3"],
+      }),
+    );
+  });
+
+  // Đảm bảo detail chỉ loại self/shop và vẫn trả page size 24 cho carousel recommendation.
+  it("should exclude the current product and its shop on product detail", async () => {
+    // Arrange
+    mockCatalog.findSnapshots.mockResolvedValue([
+      { sellerShopId: "shop-1", externalShopId: null } as never,
+    ]);
+    const input = {
+      surface: "product_detail" as const,
+      productId: "product-1",
+      page: 1,
+      pageSize: 24,
+    };
+
+    // Act
+    const result = await target.getRecommendations(input, "user-1", null);
+
+    // Assert
+    expect(result.pageSize).toBe(24);
+    expect(mockUnionFactory.create).toHaveBeenCalledWith(
+      ["product-1"],
+      300,
+      { excludeSellerShopId: "shop-1" },
+    );
+    expect(mockCandidates.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        excludedProductIds: ["product-1"],
+        excludedSellerShopId: "shop-1",
+        recentProductIds: [],
+      }),
     );
   });
 });

@@ -1,17 +1,28 @@
+// File này kiểm thử invariant deduplicate và exclusion cuối của candidate union trước ranking.
+/// <reference types="jest" />
+
 import { CandidateUnion } from "./candidate-union.service";
 import type { RecommendationCatalogProduct } from "../../../../../catalog/application/types/catalog-product.type";
 
-function product(productId: string): RecommendationCatalogProduct {
+// Tạo read model tối thiểu để test union tập trung vào shop identity và attribution.
+function product(
+  productId: string,
+  shop: {
+    sellerShopId?: string | null;
+    externalShopId?: string | null;
+    originType?: "INTERNAL" | "EXTERNAL";
+  } = {},
+): RecommendationCatalogProduct {
   return {
     productId,
-    originType: "INTERNAL",
+    originType: shop.originType ?? "INTERNAL",
     name: `Product ${productId}`,
     slug: productId,
     imageUrl: null,
     categoryId: null,
     brandId: null,
-    sellerShopId: null,
-    externalShopId: null,
+    sellerShopId: shop.sellerShopId ?? null,
+    externalShopId: shop.externalShopId ?? null,
     minPrice: "100",
     maxPrice: "100",
     ratingAvg: null,
@@ -35,6 +46,7 @@ function product(productId: string): RecommendationCatalogProduct {
 }
 
 describe("CandidateUnion", () => {
+  // Đảm bảo deduplicate product không làm mất attribution từ nhiều relation type.
   it("preserves every relation contribution for one product", () => {
     const union = new CandidateUnion(new Set(), 10);
 
@@ -72,6 +84,61 @@ describe("CandidateUnion", () => {
     expect(candidate?.contributions?.map((item) => item.relationType)).toEqual([
       "CO_PURCHASE",
       "CO_CART",
+    ]);
+  });
+
+  // Đảm bảo internal shop exclusion được áp dụng ngay tại lớp union.
+  it("excludes products from the current internal shop", () => {
+    // Arrange
+    const union = new CandidateUnion(new Set(), 10, {
+      excludeSellerShopId: "shop-1",
+    });
+
+    // Act
+    union.add(
+      [
+        product("same-shop", { sellerShopId: "shop-1" }),
+        product("other-shop", { sellerShopId: "shop-2" }),
+      ],
+      "TRENDING",
+    );
+
+    // Assert
+    expect(union.values().map((item) => item.product.productId)).toEqual([
+      "other-shop",
+    ]);
+  });
+
+  // Đảm bảo external shop exclusion không bị nhầm với sellerShopId.
+  it("excludes products from the current external shop", () => {
+    // Arrange
+    const union = new CandidateUnion(new Set(), 10, {
+      excludeExternalShopId: "external-shop-1",
+    });
+
+    // Act
+    union.add(
+      [
+        product("same-external-shop", {
+          originType: "EXTERNAL",
+          externalShopId: "external-shop-1",
+        }),
+        product("other-external-shop", {
+          originType: "EXTERNAL",
+          externalShopId: "external-shop-2",
+        }),
+        product("same-id-different-namespace", {
+          originType: "INTERNAL",
+          sellerShopId: "external-shop-1",
+        }),
+      ],
+      "SEMANTIC_SIMILARITY",
+    );
+
+    // Assert
+    expect(union.values().map((item) => item.product.productId)).toEqual([
+      "other-external-shop",
+      "same-id-different-namespace",
     ]);
   });
 });

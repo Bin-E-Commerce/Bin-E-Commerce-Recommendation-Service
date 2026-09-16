@@ -20,9 +20,10 @@ import type {
 import { CandidateUnionService } from "../candidates/union/candidate-union.service";
 import { CandidateGenerationService } from "../candidates/generation/candidate-generation.service";
 import type { CandidateSourceResult } from "../../types/candidates/candidate-source.types";
-import { RankingExperimentService } from "../ranking/experiments/ranking-experiment.service";
 import { RecommendationTrackingTokenService } from "../tracking/attribution/recommendation-tracking-token.service";
 import { RecommendationMlRankingService } from "../ranking/ml/recommendation-ml-ranking.service";
+import { CatalogService } from "../../../../catalog/application/services/catalog/catalog.service";
+import type { RecommendationCatalogProduct } from "../../../../catalog/application/types/catalog-product.type";
 
 @Injectable()
 export class RecommendationQueryService {
@@ -36,9 +37,9 @@ export class RecommendationQueryService {
     private readonly ranking: RecommendationRankingService,
     private readonly unionFactory: CandidateUnionService,
     private readonly candidates: CandidateGenerationService,
-    private readonly experiment: RankingExperimentService,
     private readonly trackingToken: RecommendationTrackingTokenService,
     private readonly mlRanking: RecommendationMlRankingService,
+    private readonly catalog: CatalogService,
   ) {
     const configuredTtl = Number(
       this.config.get<string>("RECOMMENDATION_CACHE_TTL_SECONDS", "300"),
@@ -58,18 +59,12 @@ export class RecommendationQueryService {
     const actorId = userId ?? sessionId ?? "anonymous";
     const pageSize =
       input.surface === "product_detail"
-        ? Math.min(input.pageSize, 6)
+        ? Math.min(input.pageSize, 24)
         : input.pageSize;
-    const assignment = this.experiment.resolve(
-      userId ? "USER" : "SESSION",
-      actorId,
-    );
-    const mode = this.resolveRankingMode(assignment.variant);
-    // Chỉ gắn experiment khi mode được gán thực sự chạy; AI fallback không bị ghi nhầm là AI treatment.
-    const experiment =
-      assignment.id && assignment.variant === mode
-        ? assignment
-        : { id: null, variant: "HYBRID" as const };
+    // AI bật thì mọi actor đều được thử model; Standard chỉ là mode tắt AI hoặc fallback khi model không hợp lệ.
+    const mode: RankingMode = this.ranking.isMlRankingEnabled()
+      ? "ML_HYBRID"
+      : "HYBRID";
     const policyVersion = this.ranking.getPolicyVersion(mode);
     const [globalVersion, actorVersion] = await Promise.all([
       this.redis.getVersion("recommendation:cache-version:global"),
@@ -78,14 +73,13 @@ export class RecommendationQueryService {
       ),
     ]);
     const ruleVersion = encodeURIComponent(policyVersion);
-    const cacheKey = `recommendation:contract-v4:v${globalVersion}:r${ruleVersion}:e${experiment.id ?? "none"}:${experiment.variant}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
+    const cacheKey = `recommendation:contract-v5:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? "none"}:${input.surface}:${input.productId ?? "none"}:${input.page}:${pageSize}`;
     const cached = await this.redis.getJson<RecommendationResponse>(cacheKey);
     if (cached) {
       const response = this.refreshCachedResponse(
         cached,
         actorId,
         input.surface,
-        mode,
       );
       return response;
     }
@@ -98,7 +92,6 @@ export class RecommendationQueryService {
       context,
       pageSize,
       mode,
-      experiment,
     );
     await this.redis.setJson(cacheKey, result.response, this.cacheTtlSeconds);
     return result.response;
@@ -109,17 +102,17 @@ export class RecommendationQueryService {
     cached: RecommendationResponse,
     actorId: string,
     surface: RecommendationQueryDto["surface"],
-    mode: RankingMode,
   ): RecommendationResponse {
     const requestId = randomUUID();
+    const rankingMode: RankingMode =
+      cached.rankingMode ??
+      (cached.rankingModelVersion ? "ML_HYBRID" : "HYBRID");
     return {
       ...cached,
       requestId,
       generatedAt: new Date().toISOString(),
       // Cache cũ có thể chưa có field rankingMode; suy luận an toàn từ model version để response contract luôn đầy đủ.
-      rankingMode:
-        cached.rankingMode ??
-        (cached.rankingModelVersion ? "ML_HYBRID" : "HYBRID"),
+      rankingMode,
       rankingModelVersion: cached.rankingModelVersion ?? null,
       items: cached.items.map((item) => ({
         ...item,
@@ -131,15 +124,18 @@ export class RecommendationQueryService {
           source: item.source,
           surface,
           policyVersion:
-            cached.rankingPolicyVersion ?? this.ranking.getPolicyVersion(mode),
-          experimentId: cached.experiment?.id ?? null,
-          experimentVariant: cached.experiment?.variant ?? null,
+            cached.rankingPolicyVersion ??
+            this.ranking.getPolicyVersion(rankingMode),
+          rankingMode,
         }),
       })),
     };
   }
 
   // Gom source candidate bằng các query song song; duplicate product chỉ giữ một read model và hợp nhất source để explainability.
+  // Với product detail, snapshot được đọc trước để xác định đúng namespace shop rồi truyền exclusion xuống từng source và union.
+  // Với home/recommendations_page, recentProductIds không bị loại vì chúng vẫn là anchor cho semantic/co-behavior ranking.
+  // Mọi source vẫn fail-soft ở CandidateGenerationService, còn snapshot lỗi chỉ làm mất shop exclusion chứ không làm mất response.
   private async buildResponse(
     input: RecommendationQueryDto,
     userId: string | null,
@@ -147,7 +143,6 @@ export class RecommendationQueryService {
     context: Awaited<ReturnType<SessionContextService["get"]>>,
     pageSize: number,
     mode: RankingMode,
-    experiment: ReturnType<RankingExperimentService["resolve"]>,
   ): Promise<{
     response: RecommendationResponse;
   }> {
@@ -178,12 +173,31 @@ export class RecommendationQueryService {
         ...(context?.recentBrandIds ?? []),
       ]),
     ].filter(Boolean);
+    // Recent products là anchor để tìm semantic/co-behavior, không phải exclusion mặc định;
+    // chỉ product đang mở bị loại ở product detail để tránh lặp chính nó trên carousel.
     const excluded = new Set(
-      [
-        input.productId,
-        ...(context?.recentProductIds ?? []).slice(0, 3),
-      ].filter(Boolean) as string[],
+      (input.surface === "product_detail" ? [input.productId] : []).filter(
+        Boolean,
+      ) as string[],
     );
+    let currentProduct: RecommendationCatalogProduct | null = null;
+    if (input.surface === "product_detail" && input.productId) {
+      try {
+        currentProduct =
+          (await this.catalog.findSnapshots([input.productId]))[0] ?? null;
+      } catch {
+        // Snapshot lỗi chỉ bỏ shop exclusion; exclusion productId vẫn giữ để recommendation không lặp chính sản phẩm.
+        currentProduct = null;
+      }
+    }
+    const shopExclusions = {
+      ...(currentProduct?.sellerShopId
+        ? { excludeSellerShopId: currentProduct.sellerShopId }
+        : {}),
+      ...(currentProduct?.externalShopId
+        ? { excludeExternalShopId: currentProduct.externalShopId }
+        : {}),
+    };
     const strategy: RecommendationStrategy =
       productPreferences.some((item) => item.score > 0) ||
       categoryPreferences.some((item) => item.score > 0) ||
@@ -193,10 +207,12 @@ export class RecommendationQueryService {
           ? "SESSION_BASED"
           : "COLD_START";
 
-    const union = this.unionFactory.create([...excluded], 300);
+    const union = this.unionFactory.create([...excluded], 300, shopExclusions);
     const sourceResults = await this.candidates.generate({
       productId: input.productId,
       excludedProductIds: [...excluded],
+      excludedSellerShopId: shopExclusions.excludeSellerShopId,
+      excludedExternalShopId: shopExclusions.excludeExternalShopId,
       profileProductIds,
       categoryIds,
       brandIds,
@@ -223,13 +239,9 @@ export class RecommendationQueryService {
             features: new Map(),
             modelVersion: null,
           };
-    // ML fail-soft phải hạ cả mode/experiment; fallback Standard không được tính nhầm là lượt AI.
+    // ML fail-soft phải hạ mode về Standard để analytics phản ánh đúng mode thực sự đã phục vụ.
     const servingMode: RankingMode =
       mode === "ML_HYBRID" && !mlResult.modelVersion ? "HYBRID" : mode;
-    const servingExperiment =
-      experiment.id && experiment.variant === servingMode
-        ? experiment
-        : { id: null, variant: "HYBRID" as const };
     const diversified = this.ranking.rank(
       candidatePool,
       productPreferences,
@@ -272,7 +284,6 @@ export class RecommendationQueryService {
           actorId,
           input.surface,
           servingMode,
-          servingExperiment,
         ),
       ),
       page: input.page,
@@ -284,21 +295,8 @@ export class RecommendationQueryService {
       rankingPolicyVersion: this.ranking.getPolicyVersion(servingMode),
       rankingMode: servingMode,
       rankingModelVersion: mlResult.modelVersion,
-      experiment: servingExperiment.id
-        ? { id: servingExperiment.id, variant: servingExperiment.variant }
-        : null,
     };
     return { response };
-  }
-
-  // Standard luôn là baseline; variant AI chỉ được dùng khi policy cho phép gọi model.
-  private resolveRankingMode(
-    variant: ReturnType<RankingExperimentService["resolve"]>["variant"],
-  ): RankingMode {
-    if (variant === "ML_HYBRID" && this.ranking.isMlRankingEnabled()) {
-      return "ML_HYBRID";
-    }
-    return "HYBRID";
   }
 
   // Dua ket qua source vao union tai mot diem duy nhat de query service chi con dieu phoi response/pagination.
@@ -317,7 +315,6 @@ export class RecommendationQueryService {
     actorId: string,
     surface: RecommendationQueryDto["surface"],
     mode: RankingMode,
-    experiment: ReturnType<RankingExperimentService["resolve"]>,
   ): RecommendationItemResponse {
     const sourcePriority = [
       "PRODUCT_AFFINITY",
@@ -352,6 +349,7 @@ export class RecommendationQueryService {
         name: item.product.name,
         slug: item.product.slug,
         sellerShopId: item.product.sellerShopId,
+        externalShopId: item.product.externalShopId,
         categoryId: item.product.categoryId,
         minPrice: item.product.minPrice,
         maxPrice: item.product.maxPrice,
@@ -381,8 +379,7 @@ export class RecommendationQueryService {
         source,
         surface,
         policyVersion: this.ranking.getPolicyVersion(mode),
-        experimentId: experiment.id,
-        experimentVariant: experiment.id ? experiment.variant : null,
+        rankingMode: mode,
       }),
       rank,
       score: Number(item.score.toFixed(6)),

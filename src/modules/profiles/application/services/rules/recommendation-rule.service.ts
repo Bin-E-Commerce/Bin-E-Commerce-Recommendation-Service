@@ -54,12 +54,6 @@ export interface RuntimeRecommendationPolicy {
   hybridWeights?: Partial<HybridRankingWeights>;
   mlEnabled?: boolean;
   mlBlend?: number;
-  experimentEnabled?: boolean;
-  trafficPercent?: number;
-  candidateSources?: {
-    semanticEnabled?: boolean;
-    coBehaviorEnabled?: boolean;
-  };
 }
 
 const DEFAULT_HYBRID_RANKING_WEIGHTS: HybridRankingWeights = {
@@ -215,79 +209,39 @@ export class RecommendationRuleService {
     return this.config.get<string>("ML_RANKING_POLICY_VERSION", "ml-hybrid-v1");
   }
 
-  // Đọc trạng thái experiment từ policy runtime, sau đó mới fallback về env để policy cũ vẫn tương thích.
-  getExperimentEnabled(): boolean {
-    if (this.runtimePolicy?.experimentEnabled !== undefined) {
-      return this.runtimePolicy.experimentEnabled;
-    }
-    return (
-      this.config.get<string>("RANKING_EXPERIMENT_ENABLED", "false") === "true"
-    );
-  }
-
-  // Giới hạn traffic AI ở boundary runtime để cấu hình lỗi không thể vô tình mở toàn bộ traffic.
-  getExperimentTrafficPercent(): number {
-    const value = Number(
-      this.runtimePolicy?.trafficPercent ??
-        this.config.get<string>("RANKING_EXPERIMENT_TRAFFIC_PERCENT", "0"),
-    );
-    return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
-  }
-
-  // Candidate source chỉ được chạy khi cả policy Admin và master switch triển khai đều cho phép.
+  // Candidate source luôn được thử; ENV chỉ còn là công tắc vận hành khẩn cấp khi một pipeline gặp sự cố.
   isCandidateSourceEnabled(source: "semantic" | "coBehavior"): boolean {
-    const policyEnabled =
-      source === "semantic"
-        ? this.runtimePolicy?.candidateSources?.semanticEnabled
-        : this.runtimePolicy?.candidateSources?.coBehaviorEnabled;
     const envKey =
       source === "semantic"
         ? "SEMANTIC_CANDIDATES_ENABLED"
         : "CO_BEHAVIOR_CANDIDATES_ENABLED";
     return (
-      (policyEnabled ?? true) &&
-      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "false") ===
+      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "true") ===
         "true" &&
-      this.config.get<string>(envKey, "false") === "true"
+      this.config.get<string>(envKey, "true") === "true"
     );
   }
 
-  // Trả cả policy flag và master switch để Admin phân biệt bị tắt bởi policy hay bị khóa từ môi trường.
-  getCandidateSourceStatus(policy?: {
-    semanticEnabled?: boolean;
-    coBehaviorEnabled?: boolean;
-  }): {
+  // Trả trạng thái read-only của ENV để Admin biết source nào đang bị khóa vận hành, không có quyền override từ policy.
+  getCandidateSourceStatus(): {
     semanticEnabled: boolean;
     coBehaviorEnabled: boolean;
-    semanticPolicyEnabled: boolean;
-    coBehaviorPolicyEnabled: boolean;
     semanticMasterEnabled: boolean;
     coBehaviorMasterEnabled: boolean;
     pipelineMasterEnabled: boolean;
   } {
     const pipelineMasterEnabled =
-      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "false") ===
+      this.config.get<string>("CANDIDATE_PIPELINE_V3_ENABLED", "true") ===
       "true";
     const semanticMasterEnabled =
-      this.config.get<string>("SEMANTIC_CANDIDATES_ENABLED", "false") ===
+      this.config.get<string>("SEMANTIC_CANDIDATES_ENABLED", "true") ===
       "true";
     const coBehaviorMasterEnabled =
-      this.config.get<string>("CO_BEHAVIOR_CANDIDATES_ENABLED", "false") ===
+      this.config.get<string>("CO_BEHAVIOR_CANDIDATES_ENABLED", "true") ===
       "true";
     return {
-      semanticEnabled:
-        (policy?.semanticEnabled ?? this.getPolicyCandidateFlag("semantic")) &&
-        pipelineMasterEnabled &&
-        semanticMasterEnabled,
-      coBehaviorEnabled:
-        (policy?.coBehaviorEnabled ??
-          this.getPolicyCandidateFlag("coBehavior")) &&
-        pipelineMasterEnabled &&
-        coBehaviorMasterEnabled,
-      semanticPolicyEnabled:
-        policy?.semanticEnabled ?? this.getPolicyCandidateFlag("semantic"),
-      coBehaviorPolicyEnabled:
-        policy?.coBehaviorEnabled ?? this.getPolicyCandidateFlag("coBehavior"),
+      semanticEnabled: pipelineMasterEnabled && semanticMasterEnabled,
+      coBehaviorEnabled: pipelineMasterEnabled && coBehaviorMasterEnabled,
       semanticMasterEnabled,
       coBehaviorMasterEnabled,
       pipelineMasterEnabled,
@@ -300,24 +254,12 @@ export class RecommendationRuleService {
     hybridWeights: HybridRankingWeights;
     mlEnabled: boolean;
     mlBlend: number;
-    experimentEnabled: boolean;
-    trafficPercent: number;
-    candidateSources: {
-      semanticEnabled: boolean;
-      coBehaviorEnabled: boolean;
-    };
   } {
     return {
       version: this.getRuleVersion(),
       hybridWeights: this.getHybridRankingWeights(),
       mlEnabled: this.isMlRankingEnabled(),
       mlBlend: this.getMlRankingBlend(),
-      experimentEnabled: this.getExperimentEnabled(),
-      trafficPercent: this.getExperimentTrafficPercent(),
-      candidateSources: {
-        semanticEnabled: this.getPolicyCandidateFlag("semantic"),
-        coBehaviorEnabled: this.getPolicyCandidateFlag("coBehavior"),
-      },
     };
   }
 
@@ -364,13 +306,4 @@ export class RecommendationRuleService {
     return Number.isFinite(weight) && hasExpectedSign ? weight : defaultWeight;
   }
 
-  // Giữ policy flag độc lập với env master để policy cũ không làm candidate source bị tắt ngoài ý muốn.
-  private getPolicyCandidateFlag(source: "semantic" | "coBehavior"): boolean {
-    const value =
-      source === "semantic"
-        ? this.runtimePolicy?.candidateSources?.semanticEnabled
-        : this.runtimePolicy?.candidateSources?.coBehaviorEnabled;
-    if (value !== undefined) return value;
-    return true;
-  }
 }

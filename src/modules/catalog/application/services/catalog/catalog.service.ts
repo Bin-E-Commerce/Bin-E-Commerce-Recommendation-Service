@@ -11,6 +11,7 @@ import { ConfigService } from "@nestjs/config";
 import type {
   CatalogBootstrapItem,
   CatalogProductListOptions,
+  CatalogProductExclusionOptions,
   RecommendationCatalogProduct,
 } from "../../types/catalog-product.type";
 import type { RecommendationCatalogEvent } from "@common/kafka/events/recommendation.events";
@@ -319,39 +320,56 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
   async findNewest(
     limit: number,
     excludeProductIds: string[] = [],
+    shopExclusions: Omit<CatalogProductExclusionOptions, "excludeProductIds"> = {},
   ): Promise<RecommendationCatalogProduct[]> {
-    return this.repository.findNewest(limit, excludeProductIds);
+    return this.repository.findNewest(limit, {
+      ...shopExclusions,
+      excludeProductIds,
+    });
   }
 
   // Lấy sản phẩm bán chạy làm baseline quality khi user/session chưa đủ tín hiệu.
   async findBestSelling(
     limit: number,
     excludeProductIds: string[] = [],
+    shopExclusions: Omit<CatalogProductExclusionOptions, "excludeProductIds"> = {},
   ): Promise<RecommendationCatalogProduct[]> {
-    return this.repository.findBestSelling(limit, excludeProductIds);
+    return this.repository.findBestSelling(limit, {
+      ...shopExclusions,
+      excludeProductIds,
+    });
   }
 
   // Lấy trending từ aggregate hành vi gần đây, không dùng tổng view tuyệt đối để tránh sản phẩm quá cũ luôn đứng đầu.
   async findTrending(
     limit: number,
     excludeProductIds: string[] = [],
+    shopExclusions: Omit<CatalogProductExclusionOptions, "excludeProductIds"> = {},
   ): Promise<RecommendationCatalogProduct[]> {
-    return this.repository.findTrending(limit, excludeProductIds);
+    return this.repository.findTrending(limit, {
+      ...shopExclusions,
+      excludeProductIds,
+    });
   }
 
   // Tạo source explore ổn định để cold-start vẫn có độ đa dạng mà không làm kết quả nhảy ngẫu nhiên mỗi request.
   async findExplore(
     limit: number,
     excludeProductIds: string[] = [],
+    shopExclusions: Omit<CatalogProductExclusionOptions, "excludeProductIds"> = {},
   ): Promise<RecommendationCatalogProduct[]> {
-    return this.repository.findExplore(limit, excludeProductIds);
+    return this.repository.findExplore(limit, {
+      ...shopExclusions,
+      excludeProductIds,
+    });
   }
 
   // Lấy product theo danh sách affinity và giữ thứ tự score ở lớp application.
   async findByIds(
     productIds: string[],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProduct[]> {
-    return this.repository.findByIds(productIds);
+    return this.repository.findByIds(productIds, exclusions);
   }
 
   // Lấy snapshot kể cả inactive để semantic source xác thực contentHash của anchor trước khi dùng vector.

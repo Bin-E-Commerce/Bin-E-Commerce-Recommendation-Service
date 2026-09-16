@@ -162,7 +162,7 @@ export class AdminRecommendationController {
     description: [
       "Mục đích: cho Admin xem cấu hình mà Recommendation Service hiện đang dùng để xếp hạng sản phẩm.",
       "Đầu vào: không có query hoặc body.",
-      "Kết quả: version và trạng thái policy cùng hybridWeights của Standard Ranking, cấu hình AI, traffic rollout, candidate sources, trạng thái model, người cập nhật, lý do và thời điểm. Nếu chưa lưu policy trong database, trả cấu hình runtime mặc định hiện tại.",
+      "Kết quả: version và trạng thái policy cùng hybridWeights của Standard Ranking, cấu hình AI, trạng thái các candidate source theo ENV, trạng thái model, người cập nhật, lý do và thời điểm. Nếu chưa lưu policy trong database, trả cấu hình runtime mặc định hiện tại.",
       "Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_READ.",
     ].join("\n\n"),
   })
@@ -191,7 +191,7 @@ export class AdminRecommendationController {
     summary: "Cập nhật policy ranking",
     description: [
       "Mục đích: thay đổi trọng số Standard Ranking hoặc cấu hình AI-Enhanced Ranking đang áp dụng.",
-      "Đầu vào: body patch có thể gồm hybridWeights, mlEnabled, mlBlend (0–0.5), experimentEnabled, trafficPercent (0–100), candidateSources và reason. Có thể chỉ gửi phần muốn đổi; các giá trị không gửi sẽ được giữ nguyên. Actor cập nhật được lấy từ trusted x-user-id header.",
+      "Đầu vào: body patch có thể gồm hybridWeights, mlEnabled, mlBlend (0–0.5) và reason. Khi mlEnabled bật, AI áp dụng cho toàn bộ request; nếu model lỗi hệ thống tự fallback về Standard Ranking. Actor cập nhật được lấy từ trusted x-user-id header.",
       "Xử lý và kết quả: backend kiểm tra key/trọng số, chuẩn hóa tổng trọng số, lưu một version policy mới rồi cập nhật runtime; response trả version, config và metadata lưu.",
       "Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_WRITE. Cấu hình sai hoặc tổng trọng số không hợp lệ bị từ chối, không thay policy đang chạy.",
     ].join("\n\n"),
@@ -298,20 +298,20 @@ export class AdminRecommendationController {
     return this.service.rollbackPolicy(version, this.requireUserId(headers));
   }
 
-  @Get("experiments")
+  @Get("ranking-performance")
   @ApiOperation({
-    summary: "Đọc kết quả tổng hợp của các ranking experiment",
+    summary: "Đọc hiệu quả theo ranking mode",
     description: [
-      "Mục đích: theo dõi dữ liệu attribution theo experiment/variant để biết các lượt impression, click và hành động liên quan đã được ghi nhận đến đâu.",
+      "Mục đích: theo dõi dữ liệu attribution theo ranking mode thực tế để biết AI và Standard/Fallback đang tạo ra bao nhiêu impression, click và hành động liên quan.",
       "Đầu vào: from/to dạng ngày giờ; mặc định lấy 30 ngày gần nhất và giới hạn tối đa 31 ngày.",
-      "Kết quả: số liệu aggregate từ event có recommendation attribution trong khoảng đã chọn. Nếu chưa có event hợp lệ cho variant thì có thể trả danh sách rỗng; endpoint không tự sinh dữ liệu thử nghiệm.",
+      "Kết quả: số liệu aggregate từ toàn bộ event có recommendation attribution trong khoảng đã chọn, nhóm theo ranking mode; endpoint không chia traffic và không tự sinh dữ liệu thử nghiệm.",
       "Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_ANALYTICS_READ.",
     ].join("\n\n"),
   })
   @ApiResponse({
     status: 200,
     description:
-      "Các số liệu experiment aggregate trong khoảng thời gian đã chọn.",
+      "Các số liệu ranking performance aggregate trong khoảng thời gian đã chọn.",
   })
   @ApiResponse({
     status: 400,
@@ -325,7 +325,7 @@ export class AdminRecommendationController {
     status: 403,
     description: "Admin không có quyền đọc analytics recommendation.",
   })
-  async experiments(
+  async rankingPerformance(
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Query() query: AnalyticsQueryDto,
   ) {
@@ -334,7 +334,7 @@ export class AdminRecommendationController {
       Permission.ADMIN_RECOMMENDATION_ANALYTICS_READ,
     );
     const range = this.normalizeRange(query);
-    return this.service.getExperiments(range.from, range.to);
+    return this.service.getRankingPerformance(range.from, range.to);
   }
 
   // Mặc định lấy 30 ngày gần nhất; giới hạn tối đa 31 ngày để bảo vệ DB khi Admin mở dashboard.

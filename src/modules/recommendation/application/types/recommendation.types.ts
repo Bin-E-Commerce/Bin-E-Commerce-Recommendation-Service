@@ -15,6 +15,7 @@ export interface RecommendationProductResponse {
   name: string;
   slug: string;
   sellerShopId: string | null;
+  externalShopId: string | null;
   categoryId: string | null;
   minPrice: string;
   maxPrice: string;
@@ -56,9 +57,4 @@ export interface RecommendationResponse {
   rankingPolicyVersion: string;
   rankingMode: "HYBRID" | "ML_HYBRID";
   rankingModelVersion: string | null;
-  experiment: {
-    id: string;
-    // CONTROL được giữ để client đọc response/token cache lịch sử, không được phát sinh từ assignment mới.
-    variant: "CONTROL" | "HYBRID" | "ML_HYBRID";
-  } | null;
 }

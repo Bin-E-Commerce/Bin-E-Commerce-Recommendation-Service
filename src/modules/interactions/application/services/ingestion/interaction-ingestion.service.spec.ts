@@ -94,8 +94,7 @@ describe("InteractionIngestionService", () => {
       recommendationRank: 1,
       surface: "home" as const,
       recommendationPolicyVersion: "hybrid-ranking-v1",
-      recommendationExperimentId: "phase4-test",
-      recommendationExperimentVariant: "HYBRID" as const,
+      recommendationRankingMode: "HYBRID" as const,
     };
 
     // Act
@@ -118,7 +117,7 @@ describe("InteractionIngestionService", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           recommendationItemId: "signed-item-token",
-          recommendationExperimentVariant: "HYBRID",
+          recommendationRankingMode: "HYBRID",
         }),
       }),
     );

@@ -94,11 +94,6 @@ export class RecordInteractionDto {
   recommendationPolicyVersion?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(128)
-  recommendationExperimentId?: string;
-
-  @IsOptional()
-  @IsIn(["CONTROL", "HYBRID", "ML_HYBRID"])
-  recommendationExperimentVariant?: "CONTROL" | "HYBRID" | "ML_HYBRID";
+  @IsIn(["HYBRID", "ML_HYBRID"])
+  recommendationRankingMode?: "HYBRID" | "ML_HYBRID";
 }

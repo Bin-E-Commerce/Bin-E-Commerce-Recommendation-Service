@@ -6,6 +6,8 @@ import type { RecommendationStrategy } from "../recommendation.types";
 export interface CandidateSourceInput {
   productId?: string;
   excludedProductIds: string[];
+  excludedSellerShopId?: string;
+  excludedExternalShopId?: string;
   profileProductIds: string[];
   categoryIds: string[];
   brandIds: string[];

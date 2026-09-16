@@ -117,26 +117,12 @@ export class AdminRecommendationService {
       },
       mlEnabled: stored.mlEnabled ?? defaults.mlEnabled,
       mlBlend: stored.mlBlend ?? defaults.mlBlend,
-      experimentEnabled: stored.experimentEnabled ?? defaults.experimentEnabled,
-      trafficPercent: stored.trafficPercent ?? defaults.trafficPercent,
-      candidateSources: {
-        semanticEnabled:
-          stored.candidateSources?.semanticEnabled ??
-          defaults.candidateSources.semanticEnabled,
-        coBehaviorEnabled:
-          stored.candidateSources?.coBehaviorEnabled ??
-          defaults.candidateSources.coBehaviorEnabled,
-      },
     };
-    const candidateStatus = this.rules.getCandidateSourceStatus(
-      config.candidateSources,
-    );
+    const candidateStatus = this.rules.getCandidateSourceStatus();
     const model = await this.mlRanking.getStatus();
     const runtime: RecommendationPolicyRuntimeStatus = {
       standardEnabled: true,
       aiPolicyEnabled: config.mlEnabled,
-      experimentEnabled: config.experimentEnabled,
-      trafficPercent: config.trafficPercent,
       candidateSources: candidateStatus,
       model,
     };
@@ -172,12 +158,6 @@ export class AdminRecommendationService {
       reason?: string;
       mlEnabled?: boolean;
       mlBlend?: number;
-      experimentEnabled?: boolean;
-      trafficPercent?: number;
-      candidateSources?: {
-        semanticEnabled?: boolean;
-        coBehaviorEnabled?: boolean;
-      };
     },
     actorUserId: string,
   ) {
@@ -193,16 +173,6 @@ export class AdminRecommendationService {
       },
       mlEnabled: stored.mlEnabled ?? defaults.mlEnabled,
       mlBlend: stored.mlBlend ?? defaults.mlBlend,
-      experimentEnabled: stored.experimentEnabled ?? defaults.experimentEnabled,
-      trafficPercent: stored.trafficPercent ?? defaults.trafficPercent,
-      candidateSources: {
-        semanticEnabled:
-          stored.candidateSources?.semanticEnabled ??
-          defaults.candidateSources.semanticEnabled,
-        coBehaviorEnabled:
-          stored.candidateSources?.coBehaviorEnabled ??
-          defaults.candidateSources.coBehaviorEnabled,
-      },
     };
     const config = this.normalizeConfig({
       // PATCH policy phải giữ lại các weight không được gửi lên; nếu thay cả object bằng payload một phần,
@@ -213,16 +183,6 @@ export class AdminRecommendationService {
       },
       mlEnabled: input.mlEnabled ?? current.mlEnabled,
       mlBlend: input.mlBlend ?? current.mlBlend,
-      experimentEnabled: input.experimentEnabled ?? current.experimentEnabled,
-      trafficPercent: input.trafficPercent ?? current.trafficPercent,
-      candidateSources: {
-        semanticEnabled:
-          input.candidateSources?.semanticEnabled ??
-          current.candidateSources.semanticEnabled,
-        coBehaviorEnabled:
-          input.candidateSources?.coBehaviorEnabled ??
-          current.candidateSources.coBehaviorEnabled,
-      },
     });
     const version = `admin-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const saved = await this.repository.activatePolicy({
@@ -237,9 +197,6 @@ export class AdminRecommendationService {
       hybridWeights: config.hybridWeights,
       mlEnabled: config.mlEnabled,
       mlBlend: config.mlBlend,
-      experimentEnabled: config.experimentEnabled,
-      trafficPercent: config.trafficPercent,
-      candidateSources: config.candidateSources,
     });
     return {
       version: saved.version,
@@ -262,16 +219,6 @@ export class AdminRecommendationService {
       hybridWeights: { ...(stored.hybridWeights ?? defaults.hybridWeights) },
       mlEnabled: stored.mlEnabled ?? defaults.mlEnabled,
       mlBlend: stored.mlBlend ?? defaults.mlBlend,
-      experimentEnabled: stored.experimentEnabled ?? defaults.experimentEnabled,
-      trafficPercent: stored.trafficPercent ?? defaults.trafficPercent,
-      candidateSources: {
-        semanticEnabled:
-          stored.candidateSources?.semanticEnabled ??
-          defaults.candidateSources.semanticEnabled,
-        coBehaviorEnabled:
-          stored.candidateSources?.coBehaviorEnabled ??
-          defaults.candidateSources.coBehaviorEnabled,
-      },
     });
     const rollbackVersion = `rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const saved = await this.repository.activatePolicy({
@@ -286,9 +233,6 @@ export class AdminRecommendationService {
       hybridWeights: config.hybridWeights,
       mlEnabled: config.mlEnabled,
       mlBlend: config.mlBlend,
-      experimentEnabled: config.experimentEnabled,
-      trafficPercent: config.trafficPercent,
-      candidateSources: config.candidateSources,
     });
     return {
       version: saved.version,
@@ -298,9 +242,9 @@ export class AdminRecommendationService {
     };
   }
 
-  // Trả experiment aggregate từ attribution event để Admin biết treatment đang có dữ liệu trước khi mở rộng traffic.
-  getExperiments(from: Date, to: Date) {
-    return this.repository.getExperiments(from, to);
+  // Trả aggregate theo ranking mode thực tế để Admin đo AI và Standard/fallback trên toàn bộ traffic.
+  getRankingPerformance(from: Date, to: Date) {
+    return this.repository.getRankingPerformance(from, to);
   }
 
   // Normalize weight tại một boundary duy nhất và chặn key lạ để config không âm thầm bị bỏ qua.
@@ -308,12 +252,6 @@ export class AdminRecommendationService {
     hybridWeights: Record<string, unknown>;
     mlEnabled?: boolean;
     mlBlend?: number;
-    experimentEnabled?: boolean;
-    trafficPercent?: number;
-    candidateSources: {
-      semanticEnabled?: boolean;
-      coBehaviorEnabled?: boolean;
-    };
   }): RecommendationPolicyConfig {
     const hybridWeights = this.normalizeWeights(
       input.hybridWeights,
@@ -324,16 +262,6 @@ export class AdminRecommendationService {
       hybridWeights,
       mlEnabled,
       mlBlend: this.normalizeMlBlend(input.mlBlend ?? 0.3),
-      experimentEnabled: Boolean(input.experimentEnabled ?? false),
-      trafficPercent: this.normalizeTrafficPercent(input.trafficPercent ?? 0),
-      candidateSources: {
-        semanticEnabled: Boolean(
-          input.candidateSources.semanticEnabled ?? true,
-        ),
-        coBehaviorEnabled: Boolean(
-          input.candidateSources.coBehaviorEnabled ?? true,
-        ),
-      },
     };
   }
 
@@ -343,14 +271,6 @@ export class AdminRecommendationService {
       throw new BadRequestException("ML blend must be between 0 and 0.5");
     }
     return Number(value.toFixed(4));
-  }
-
-  // Giới hạn traffic AI ở backend để mọi client đều dùng chung một rollout contract an toàn.
-  private normalizeTrafficPercent(value: number): number {
-    if (!Number.isFinite(value) || value < 0 || value > 100) {
-      throw new BadRequestException("AI traffic must be between 0 and 100");
-    }
-    return Number(value.toFixed(2));
   }
 
   // Mọi weight phải hữu hạn, không âm và có tổng dương; lưu normalized giúp trace và cache có semantics ổn định.

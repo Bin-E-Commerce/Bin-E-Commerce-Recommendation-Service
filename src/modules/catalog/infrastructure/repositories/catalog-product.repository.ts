@@ -2,10 +2,11 @@
 
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { EntityManager, In, Repository } from "typeorm";
+import { EntityManager, In, Repository, SelectQueryBuilder } from "typeorm";
 import { RecommendationCatalogProductEntity } from "../../../../database/catalog/entities/catalog-product.entity";
 import type {
   CatalogProductListOptions,
+  CatalogProductExclusionOptions,
   RecommendationCatalogProduct,
 } from "../../application/types/catalog-product.type";
 
@@ -213,11 +214,7 @@ export class CatalogProductRepository {
         brandIds: options.brandIds,
       });
     }
-    if (options.excludeProductIds?.length) {
-      query.andWhere("product.product_id NOT IN (:...excludeProductIds)", {
-        excludeProductIds: options.excludeProductIds,
-      });
-    }
+    this.applyShopExclusions(query, options);
 
     return query
       .orderBy("product.total_sold", "DESC")
@@ -228,33 +225,33 @@ export class CatalogProductRepository {
   // Lấy source sản phẩm mới theo created_at, có exclusion và tie-breaker ổn định.
   async findNewest(
     limit: number,
-    excludeProductIds: string[] = [],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProductEntity[]> {
     return this.findOrdered(
       "product.created_at",
       "DESC",
       limit,
-      excludeProductIds,
+      exclusions,
     );
   }
 
   // Lấy source best-selling từ total_sold để làm baseline cho user mới hoặc guest.
   async findBestSelling(
     limit: number,
-    excludeProductIds: string[] = [],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProductEntity[]> {
     return this.findOrdered(
       "product.total_sold",
       "DESC",
       limit,
-      excludeProductIds,
+      exclusions,
     );
   }
 
   // Join popularity aggregate để lấy trending mà không đẩy query popularity vào application service.
   async findTrending(
     limit: number,
-    excludeProductIds: string[] = [],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProductEntity[]> {
     const query = this.repository
       .createQueryBuilder("product")
@@ -283,11 +280,7 @@ export class CatalogProductRepository {
       .where("product.status = :status", { status: "ACTIVE" })
       .andWhere("product.is_in_stock = :inStock", { inStock: true });
 
-    if (excludeProductIds.length) {
-      query.andWhere("product.product_id NOT IN (:...excludeProductIds)", {
-        excludeProductIds,
-      });
-    }
+    this.applyShopExclusions(query, exclusions);
 
     return query
       .orderBy(
@@ -303,19 +296,20 @@ export class CatalogProductRepository {
   // Lấy source explore có thứ tự ổn định để cold-start không thay đổi ngẫu nhiên giữa các request.
   async findExplore(
     limit: number,
-    excludeProductIds: string[] = [],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProductEntity[]> {
     return this.findOrdered(
       "product.product_id",
       "ASC",
       limit,
-      excludeProductIds,
+      exclusions,
     );
   }
 
   // Lấy product theo affinity IDs và chỉ trả sản phẩm còn đủ điều kiện public/stock.
   async findByIds(
     productIds: string[],
+    exclusions: CatalogProductExclusionOptions = {},
   ): Promise<RecommendationCatalogProductEntity[]> {
     const uniqueProductIds = [...new Set(productIds)].filter(Boolean);
     if (uniqueProductIds.length === 0) return [];
@@ -326,12 +320,17 @@ export class CatalogProductRepository {
         isInStock: true,
       },
     });
+    const filteredProducts = products.filter(
+      (product) =>
+        !exclusions.excludeProductIds?.includes(product.productId) &&
+        !this.isExcludedByShop(product, exclusions),
+    );
     // TypeORM không đảm bảo thứ tự của IN (...); khôi phục thứ tự source để
     // product affinity/semantic rank không bị đổi ngẫu nhiên khi hydrate card.
     const position = new Map(
       uniqueProductIds.map((productId, index) => [productId, index]),
     );
-    return products.sort(
+    return filteredProducts.sort(
       (left, right) =>
         (position.get(left.productId) ?? Number.MAX_SAFE_INTEGER) -
         (position.get(right.productId) ?? Number.MAX_SAFE_INTEGER),
@@ -343,24 +342,59 @@ export class CatalogProductRepository {
     column: string,
     direction: "ASC" | "DESC",
     limit: number,
-    excludeProductIds: string[],
+    exclusions: CatalogProductExclusionOptions,
   ): Promise<RecommendationCatalogProductEntity[]> {
     const query = this.repository
       .createQueryBuilder("product")
       .where("product.status = :status", { status: "ACTIVE" })
       .andWhere("product.is_in_stock = :inStock", { inStock: true });
 
-    if (excludeProductIds.length) {
-      query.andWhere("product.product_id NOT IN (:...excludeProductIds)", {
-        excludeProductIds,
-      });
-    }
+    this.applyShopExclusions(query, exclusions);
 
     return query
       .orderBy(column, direction)
       .addOrderBy("product.product_id", "ASC")
       .limit(this.normalizeLimit(limit))
       .getMany();
+  }
+
+  // Áp dụng cùng một policy loại shop cho mọi catalog source để product detail không lọt sản phẩm cùng shop qua fallback.
+  private applyShopExclusions(
+    query: SelectQueryBuilder<RecommendationCatalogProductEntity>,
+    exclusions: CatalogProductExclusionOptions,
+  ): void {
+    if (exclusions.excludeProductIds?.length) {
+      query.andWhere("product.product_id NOT IN (:...excludeProductIds)", {
+        excludeProductIds: exclusions.excludeProductIds,
+      });
+    }
+    if (exclusions.excludeSellerShopId) {
+      query.andWhere(
+        "(product.origin_type != 'INTERNAL' OR product.seller_shop_id IS NULL OR product.seller_shop_id != :excludeSellerShopId)",
+        { excludeSellerShopId: exclusions.excludeSellerShopId },
+      );
+    }
+    if (exclusions.excludeExternalShopId) {
+      query.andWhere(
+        "(product.origin_type != 'EXTERNAL' OR product.external_shop_id IS NULL OR product.external_shop_id != :excludeExternalShopId)",
+        { excludeExternalShopId: exclusions.excludeExternalShopId },
+      );
+    }
+  }
+
+  // Bảo vệ lớp hydrate cho affinity/semantic: các sản phẩm khác shop không bị trả lại dù source chỉ cung cấp productId.
+  private isExcludedByShop(
+    product: RecommendationCatalogProductEntity,
+    exclusions: CatalogProductExclusionOptions,
+  ): boolean {
+    return Boolean(
+      (exclusions.excludeSellerShopId &&
+        product.originType === "INTERNAL" &&
+        product.sellerShopId === exclusions.excludeSellerShopId) ||
+      (exclusions.excludeExternalShopId &&
+        product.originType === "EXTERNAL" &&
+        product.externalShopId === exclusions.excludeExternalShopId),
+    );
   }
 
   // Chuẩn hóa limit ở persistence boundary để NaN, số âm hoặc số quá lớn không làm hỏng SQL/source contract.

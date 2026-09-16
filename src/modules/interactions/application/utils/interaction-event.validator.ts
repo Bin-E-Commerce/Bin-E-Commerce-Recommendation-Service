@@ -178,18 +178,16 @@ export function validateInteractionEvent(
   ) {
     throw new InvalidInteractionEventError("surface is not supported");
   }
-  const recommendationExperimentVariant =
-    payload.recommendationExperimentVariant;
-  // CONTROL chỉ còn hợp lệ cho attribution/token lịch sử; experiment mới không còn tạo variant này.
+  const recommendationRankingMode = payload.recommendationRankingMode;
   if (
-    recommendationExperimentVariant !== null &&
-    recommendationExperimentVariant !== undefined &&
-    !["CONTROL", "HYBRID", "ML_HYBRID"].includes(
-      String(recommendationExperimentVariant),
+    recommendationRankingMode !== null &&
+    recommendationRankingMode !== undefined &&
+    !["HYBRID", "ML_HYBRID"].includes(
+      String(recommendationRankingMode),
     )
   ) {
     throw new InvalidInteractionEventError(
-      "recommendationExperimentVariant is not supported",
+      "recommendationRankingMode is not supported",
     );
   }
 
@@ -243,19 +241,11 @@ export function validateInteractionEvent(
         "recommendationPolicyVersion",
         64,
       ),
-      recommendationExperimentId: optionalString(
-        payload.recommendationExperimentId,
-        "recommendationExperimentId",
-        128,
-      ),
-      recommendationExperimentVariant:
-        recommendationExperimentVariant === null ||
-        recommendationExperimentVariant === undefined
+      recommendationRankingMode:
+        recommendationRankingMode === null ||
+        recommendationRankingMode === undefined
           ? null
-          : (recommendationExperimentVariant as
-              | "CONTROL"
-              | "HYBRID"
-              | "ML_HYBRID"),
+          : (recommendationRankingMode as "HYBRID" | "ML_HYBRID"),
     },
   };
 }

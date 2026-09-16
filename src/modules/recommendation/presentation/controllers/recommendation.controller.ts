@@ -32,8 +32,8 @@ export class RecommendationController {
     summary: "Lấy danh sách sản phẩm được đề xuất",
     description: [
       "Mục đích: phục vụ danh sách gợi ý cho trang chủ, trang chi tiết sản phẩm hoặc trang recommendation; backend tự lấy candidate, xếp hạng và phân trang.",
-      "Đầu vào: query surface nhận home, product_detail hoặc recommendations_page; productId là sản phẩm mốc tùy chọn; page mặc định 1, pageSize mặc định/tối đa 24. Với surface product_detail, backend giới hạn tối đa 6 sản phẩm. Định danh lấy từ x-user-id hoặc x-session-id do Gateway chuyển tiếp.",
-      "Kết quả: danh sách item có thông tin sản phẩm, thứ hạng, điểm/nguồn/lý do gợi ý cùng requestId, strategy, trạng thái hồ sơ, phân trang và metadata policy/model/experiment nếu có.",
+      "Đầu vào: query surface nhận home, product_detail hoặc recommendations_page; productId là sản phẩm mốc tùy chọn; page mặc định 1, pageSize mặc định/tối đa 24. Với surface product_detail, backend trả tối đa 24 sản phẩm và loại sản phẩm hiện tại cùng shop của sản phẩm đó. Định danh lấy từ x-user-id hoặc x-session-id do Gateway chuyển tiếp.",
+      "Kết quả: danh sách item có thông tin sản phẩm, thứ hạng, điểm/nguồn/lý do gợi ý cùng requestId, strategy, trạng thái hồ sơ, phân trang và metadata policy/model/ranking mode.",
       "Lưu ý: cần có user hoặc guest session UUID v4. Guest chỉ xem trang đầu; muốn lấy trang tiếp theo phải đăng nhập. Khi AI không thể chạy hợp lệ, hệ thống fallback về Standard Ranking và không ghi attribution nhầm thành AI.",
     ].join("\n\n"),
   })

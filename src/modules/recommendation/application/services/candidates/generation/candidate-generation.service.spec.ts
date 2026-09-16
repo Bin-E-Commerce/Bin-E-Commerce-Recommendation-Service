@@ -1,4 +1,5 @@
 // Unit test bảo vệ các nguồn catalog dự phòng khi semantic/co-behavior không sẵn sàng.
+/// <reference types="jest" />
 
 import { Test, type TestingModule } from "@nestjs/testing";
 import { createMock, type DeepMocked } from "@golevelup/ts-jest";
@@ -82,7 +83,7 @@ describe("CandidateGenerationService", () => {
       source: "TRENDING",
       productIds: ["trending-fallback-product"],
     });
-    expect(mockCatalog.findTrending).toHaveBeenCalledWith(80, []);
+    expect(mockCatalog.findTrending).toHaveBeenCalledWith(80, [], {});
     expect(mockSemantic.findCandidates).toHaveBeenCalledTimes(1);
     expect(mockRelations.findCandidates).toHaveBeenCalledTimes(1);
   });

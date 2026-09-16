@@ -9,6 +9,7 @@ import type {
   CandidateSourceInput,
   CandidateSourceResult,
 } from "../../../types/candidates/candidate-source.types";
+import type { CatalogProductExclusionOptions } from "../../../../../catalog/application/types/catalog-product.type";
 
 // Dieu phoi cac candidate source doc lap; loi mot source khong duoc lam hong recommendation pipeline.
 @Injectable()
@@ -41,6 +42,7 @@ export class CandidateGenerationService {
                 input.profileProductIds.filter(
                   (productId) => !excludedProductIds.has(productId),
                 ),
+                this.shopExclusions(input),
               ),
           ),
       },
@@ -52,6 +54,7 @@ export class CandidateGenerationService {
               ? this.catalog.findAvailable({
                   categoryIds: input.categoryIds,
                   excludeProductIds: input.excludedProductIds,
+                  ...this.shopExclusions(input),
                   limit: 100,
                 })
               : Promise.resolve([]),
@@ -65,6 +68,7 @@ export class CandidateGenerationService {
               ? this.catalog.findAvailable({
                   brandIds: input.brandIds,
                   excludeProductIds: input.excludedProductIds,
+                  ...this.shopExclusions(input),
                   limit: 80,
                 })
               : Promise.resolve([]),
@@ -74,7 +78,11 @@ export class CandidateGenerationService {
         source: "TRENDING",
         run: () =>
           this.fromCatalog("TRENDING", "TRENDING", () =>
-            this.catalog.findTrending(80, input.excludedProductIds),
+            this.catalog.findTrending(
+              80,
+              input.excludedProductIds,
+              this.shopExclusions(input),
+            ),
           ),
       },
       { source: "SEMANTIC_SIMILARITY", run: () => this.fromSemantic(input) },
@@ -89,21 +97,33 @@ export class CandidateGenerationService {
           source: "BEST_SELLING",
           run: () =>
             this.fromCatalog("BEST_SELLING", "BEST_SELLING", () =>
-              this.catalog.findBestSelling(80, input.excludedProductIds),
+              this.catalog.findBestSelling(
+                80,
+                input.excludedProductIds,
+                this.shopExclusions(input),
+              ),
             ),
         },
         {
           source: "NEWEST",
           run: () =>
             this.fromCatalog("NEWEST", "NEWEST", () =>
-              this.catalog.findNewest(80, input.excludedProductIds),
+              this.catalog.findNewest(
+                80,
+                input.excludedProductIds,
+                this.shopExclusions(input),
+              ),
             ),
         },
         {
           source: "EXPLORE",
           run: () =>
             this.fromCatalog("EXPLORE", "EXPLORE", () =>
-              this.catalog.findExplore(60, input.excludedProductIds),
+              this.catalog.findExplore(
+                60,
+                input.excludedProductIds,
+                this.shopExclusions(input),
+              ),
             ),
         },
       );
@@ -163,6 +183,7 @@ export class CandidateGenerationService {
     });
     const products = await this.catalog.findByIds(
       candidates.map((candidate) => candidate.productId),
+      this.shopExclusions(input),
     );
     const hydratedById = new Map(
       products.map((product) => [product.productId, product]),
@@ -261,6 +282,7 @@ export class CandidateGenerationService {
     const anchorProductId = anchors[0];
     const products = await this.catalog.findByIds(
       normalizedCandidates.map((candidate) => candidate.productId),
+      this.shopExclusions(input),
     );
     return {
       source: "CO_BEHAVIOR",
@@ -281,6 +303,20 @@ export class CandidateGenerationService {
           ];
         }),
       ),
+    };
+  }
+
+  // Chuẩn hóa shop exclusion thành một option dùng chung; không tạo key null để adapter không thêm điều kiện SQL thừa.
+  private shopExclusions(
+    input: CandidateSourceInput,
+  ): Omit<CatalogProductExclusionOptions, "excludeProductIds"> {
+    return {
+      ...(input.excludedSellerShopId
+        ? { excludeSellerShopId: input.excludedSellerShopId }
+        : {}),
+      ...(input.excludedExternalShopId
+        ? { excludeExternalShopId: input.excludedExternalShopId }
+        : {}),
     };
   }
 

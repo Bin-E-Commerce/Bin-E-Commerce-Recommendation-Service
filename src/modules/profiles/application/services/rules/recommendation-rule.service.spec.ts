@@ -1,4 +1,5 @@
 // Unit tests bảo vệ policy weight/decay config để thay đổi rule không âm thầm làm sai profile projection.
+/// <reference types="jest" />
 
 import { ConfigService } from "@nestjs/config";
 import { RecommendationRuleService } from "./recommendation-rule.service";
@@ -96,7 +97,7 @@ describe("RecommendationRuleService", () => {
     );
   });
 
-  it("should combine runtime candidate policy with environment master switches", () => {
+  it("should expose candidate source status from environment master switches", () => {
     // Arrange
     const config = {
       get: jest.fn(
@@ -109,13 +110,7 @@ describe("RecommendationRuleService", () => {
       ),
     } as unknown as ConfigService;
     target = new RecommendationRuleService(config);
-    target.setRuntimePolicy({
-      version: "policy-v2",
-      candidateSources: {
-        semanticEnabled: true,
-        coBehaviorEnabled: true,
-      },
-    });
+    target.setRuntimePolicy({ version: "policy-v2" });
 
     // Act
     const status = target.getCandidateSourceStatus();
@@ -123,27 +118,26 @@ describe("RecommendationRuleService", () => {
     // Assert
     expect(status.semanticEnabled).toBe(true);
     expect(status.coBehaviorEnabled).toBe(false);
-    expect(status.coBehaviorPolicyEnabled).toBe(true);
     expect(status.coBehaviorMasterEnabled).toBe(false);
   });
 
-  it("should read experiment rollout controls from runtime policy", () => {
+  it("should default candidate sources to enabled when environment flags are absent", () => {
     // Arrange
     const config = {
       get: jest.fn((_key: string, fallback?: string) => fallback),
     } as unknown as ConfigService;
     target = new RecommendationRuleService(config);
-    target.setRuntimePolicy({
-      version: "policy-v3",
-      experimentEnabled: true,
-      trafficPercent: 35,
-    });
 
     // Act
-    const snapshot = target.getPolicySnapshot();
+    const status = target.getCandidateSourceStatus();
 
     // Assert
-    expect(snapshot.experimentEnabled).toBe(true);
-    expect(snapshot.trafficPercent).toBe(35);
+    expect(status).toEqual({
+      semanticEnabled: true,
+      coBehaviorEnabled: true,
+      semanticMasterEnabled: true,
+      coBehaviorMasterEnabled: true,
+      pipelineMasterEnabled: true,
+    });
   });
 });

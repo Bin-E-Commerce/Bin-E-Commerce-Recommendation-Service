@@ -25,8 +25,7 @@ type RecommendationAttribution = {
   recommendationRank: number | null;
   surface: RecommendationTrackingTokenInput["surface"] | null;
   recommendationPolicyVersion: string | null;
-  recommendationExperimentId: string | null;
-  recommendationExperimentVariant: "CONTROL" | "HYBRID" | "ML_HYBRID" | null;
+  recommendationRankingMode: "HYBRID" | "ML_HYBRID" | null;
 };
 
 type TrustedActor = {
@@ -149,9 +148,7 @@ export class InteractionIngestionService {
         recommendationRank: attribution.recommendationRank,
         surface: attribution.surface,
         recommendationPolicyVersion: attribution.recommendationPolicyVersion,
-        recommendationExperimentId: attribution.recommendationExperimentId,
-        recommendationExperimentVariant:
-          attribution.recommendationExperimentVariant,
+        recommendationRankingMode: attribution.recommendationRankingMode,
       },
     };
   }
@@ -171,7 +168,7 @@ export class InteractionIngestionService {
       : false;
   }
 
-  // Chỉ chấp nhận attribution do Recommendation Service ký; metadata tự khai từ browser không được đi vào A/B metrics.
+  // Chỉ chấp nhận attribution do Recommendation Service ký; ranking mode tự khai từ browser không được đi vào analytics.
   private validateRecommendationAttribution(
     dto: RecordInteractionDto,
     actorId: string,
@@ -181,10 +178,7 @@ export class InteractionIngestionService {
     const recommendationSource = dto.recommendationSource?.trim() || null;
     const recommendationPolicyVersion =
       dto.recommendationPolicyVersion?.trim() || null;
-    const recommendationExperimentId =
-      dto.recommendationExperimentId?.trim() || null;
-    const recommendationExperimentVariant =
-      dto.recommendationExperimentVariant ?? null;
+    const recommendationRankingMode = dto.recommendationRankingMode ?? null;
     const hasAnyAttribution = Boolean(
       recommendationRequestId ||
       recommendationItemId ||
@@ -192,8 +186,7 @@ export class InteractionIngestionService {
       dto.recommendationRank !== undefined ||
       dto.surface ||
       recommendationPolicyVersion ||
-      recommendationExperimentId ||
-      recommendationExperimentVariant,
+      recommendationRankingMode,
     );
 
     if (!recommendationRequestId) {
@@ -209,8 +202,7 @@ export class InteractionIngestionService {
         recommendationRank: null,
         surface: null,
         recommendationPolicyVersion: null,
-        recommendationExperimentId: null,
-        recommendationExperimentVariant: null,
+        recommendationRankingMode: null,
       };
     }
 
@@ -238,8 +230,7 @@ export class InteractionIngestionService {
       source: recommendationSource,
       surface,
       policyVersion: recommendationPolicyVersion,
-      experimentId: recommendationExperimentId,
-      experimentVariant: recommendationExperimentVariant,
+      rankingMode: recommendationRankingMode as "HYBRID" | "ML_HYBRID",
     });
     if (!isValid) {
       throw new BadRequestException("Invalid recommendation attribution");
@@ -252,8 +243,7 @@ export class InteractionIngestionService {
       recommendationRank,
       surface,
       recommendationPolicyVersion,
-      recommendationExperimentId,
-      recommendationExperimentVariant,
+      recommendationRankingMode,
     };
   }
 

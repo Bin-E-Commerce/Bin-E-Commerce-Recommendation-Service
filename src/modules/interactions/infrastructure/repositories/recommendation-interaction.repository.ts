@@ -44,9 +44,12 @@ export class RecommendationInteractionRepository {
       surface: event.data.surface ?? null,
       recommendationPolicyVersion:
         event.data.recommendationPolicyVersion ?? null,
-      recommendationExperimentId: event.data.recommendationExperimentId ?? null,
+      // Cột experiment_variant là storage legacy; giữ nguyên để không migration/xóa dữ liệu lịch sử.
+      recommendationExperimentId: null,
       recommendationExperimentVariant:
-        event.data.recommendationExperimentVariant ?? null,
+        event.data.recommendationRankingMode ??
+        event.data.recommendationExperimentVariant ??
+        null,
       metadata: { ...(event.metadata ?? {}) },
       processingStatus: "PROCESSED",
       processingError: null,

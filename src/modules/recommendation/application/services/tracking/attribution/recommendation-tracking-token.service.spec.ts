@@ -1,4 +1,5 @@
 // Unit test khóa attribution token: client chỉ được ghi nhận metadata do Recommendation Service phát hành.
+/// <reference types="jest" />
 
 import { ConfigService } from "@nestjs/config";
 import { RecommendationTrackingTokenService } from "./recommendation-tracking-token.service";
@@ -12,8 +13,7 @@ describe("RecommendationTrackingTokenService", () => {
     source: "SEMANTIC_SIMILARITY",
     surface: "home" as const,
     policyVersion: "hybrid-ranking-v1",
-    experimentId: "phase4-test",
-    experimentVariant: "HYBRID" as const,
+    rankingMode: "HYBRID" as const,
   };
 
   function createTarget(secret = "test-secret") {
@@ -45,9 +45,9 @@ describe("RecommendationTrackingTokenService", () => {
     // Act / Assert
     expect(target.verify(token, { ...input, actorId: "user-2" })).toBe(false);
     expect(target.verify(token, { ...input, rank: 2 })).toBe(false);
-    expect(
-      target.verify(token, { ...input, experimentVariant: "CONTROL" }),
-    ).toBe(false);
+    expect(target.verify(token, { ...input, rankingMode: "ML_HYBRID" })).toBe(
+      false,
+    );
   });
 
   it("requires an explicit secret in production", () => {

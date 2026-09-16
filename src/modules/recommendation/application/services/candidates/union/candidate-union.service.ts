@@ -1,7 +1,10 @@
 // File này hợp nhất candidate từ nhiều source theo request; không sở hữu catalog persistence hoặc ranking policy.
 
 import { Injectable } from "@nestjs/common";
-import type { RecommendationCatalogProduct } from "../../../../../catalog/application/types/catalog-product.type";
+import type {
+  CatalogProductExclusionOptions,
+  RecommendationCatalogProduct,
+} from "../../../../../catalog/application/types/catalog-product.type";
 import type { CandidateContributionInput } from "../../../types/candidates/candidate-source.types";
 import type { RecommendationCandidate } from "../../../types/ranking/ranking.types";
 
@@ -14,6 +17,7 @@ export class CandidateUnion {
   constructor(
     private readonly excludedProductIds: ReadonlySet<string>,
     private readonly maxSize: number,
+    private readonly shopExclusions: CatalogProductExclusionOptions = {},
   ) {}
 
   // Merge toàn bộ candidate của source; giới hạn pool được áp dụng sau khi biết đủ source để không làm semantic/co-behavior bị bỏ qua.
@@ -28,6 +32,7 @@ export class CandidateUnion {
   ): void {
     for (const product of products) {
       if (this.excludedProductIds.has(product.productId)) continue;
+      if (this.isExcludedByShop(product)) continue;
       const detail = contributionByProductId?.get(product.productId);
       const contributions: CandidateContribution[] = detail
         ? (Array.isArray(detail) ? detail : [detail]).map((item) => ({
@@ -51,6 +56,18 @@ export class CandidateUnion {
         contributions: contributions.length ? contributions : undefined,
       });
     }
+  }
+
+  // Lớp bảo vệ cuối cùng giữ invariant product detail không trả sản phẩm cùng shop dù source adapter có lỗi hoặc dữ liệu cũ.
+  private isExcludedByShop(product: RecommendationCatalogProduct): boolean {
+    return Boolean(
+      (this.shopExclusions.excludeSellerShopId &&
+        product.originType === "INTERNAL" &&
+        product.sellerShopId === this.shopExclusions.excludeSellerShopId) ||
+      (this.shopExclusions.excludeExternalShopId &&
+        product.originType === "EXTERNAL" &&
+        product.externalShopId === this.shopExclusions.excludeExternalShopId),
+    );
   }
 
   // Cắt pool theo round-robin giữa các source, sau đó ưu tiên item có nhiều attribution hơn.
@@ -143,11 +160,16 @@ export class CandidateUnion {
 // Factory stateless để mỗi request có collector riêng, tránh state leak giữa user/session.
 @Injectable()
 export class CandidateUnionService {
-  create(excludedProductIds: string[], maxSize = 300): CandidateUnion {
+  create(
+    excludedProductIds: string[],
+    maxSize = 300,
+    shopExclusions: CatalogProductExclusionOptions = {},
+  ): CandidateUnion {
     const safeMaxSize = Number.isFinite(maxSize) ? Math.trunc(maxSize) : 300;
     return new CandidateUnion(
       new Set(excludedProductIds),
       Math.min(Math.max(safeMaxSize, 1), 300),
+      shopExclusions,
     );
   }
 }

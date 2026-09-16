@@ -31,11 +31,18 @@ export interface RecommendationCatalogProduct {
   embeddingDimensions: number | null;
 }
 
-// Query options dùng chung giữa candidate application service và catalog persistence adapter.
-export interface CatalogProductListOptions {
+// Exclusion options dùng chung cho catalog source và hydrate để mọi tầng bảo vệ cùng một business rule.
+export interface CatalogProductExclusionOptions {
+  excludeProductIds?: string[];
+  excludeSellerShopId?: string;
+  excludeExternalShopId?: string;
+}
+
+// Query options của category/brand kế thừa exclusion chung, tránh lặp field giữa application và persistence.
+export interface CatalogProductListOptions
+  extends CatalogProductExclusionOptions {
   categoryIds?: string[];
   brandIds?: string[];
-  excludeProductIds?: string[];
   limit?: number;
 }
 

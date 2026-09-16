@@ -11,7 +11,6 @@ import { RelationsModule } from "../relations/relations.module";
 import { CandidateUnionService } from "./application/services/candidates/union/candidate-union.service";
 import { CandidateGenerationService } from "./application/services/candidates/generation/candidate-generation.service";
 import { RankingFeatureService } from "./application/services/ranking/features/ranking-feature.service";
-import { RankingExperimentService } from "./application/services/ranking/experiments/ranking-experiment.service";
 import { RecommendationTrackingTokenService } from "./application/services/tracking/attribution/recommendation-tracking-token.service";
 import { RecommendationMlRankingService } from "./application/services/ranking/ml/recommendation-ml-ranking.service";
 
@@ -25,7 +24,6 @@ import { RecommendationMlRankingService } from "./application/services/ranking/m
     CandidateUnionService,
     CandidateGenerationService,
     RankingFeatureService,
-    RankingExperimentService,
     RecommendationTrackingTokenService,
     RecommendationMlRankingService,
   ],

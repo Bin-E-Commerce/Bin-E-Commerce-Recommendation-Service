@@ -191,7 +191,7 @@ export class RecommendationRuleService {
     if (this.runtimePolicy?.mlEnabled !== undefined) {
       return this.runtimePolicy.mlEnabled;
     }
-    return this.config.get<string>("ML_RANKING_ENABLED", "false") === "true";
+    return this.config.get<string>("ML_RANKING_ENABLED", "true") === "true";
   }
 
   // Giới hạn ML blend tối đa 50% để model mới không thể đột ngột thay toàn bộ behavior đã kiểm chứng.

@@ -1,0 +1,29 @@
+# Chỉ gửi các file Recommendation Service cần cho Docker build.
+*
+!package.json
+!package-lock.json
+!tsconfig.base.json
+!packages/
+!packages/common/
+!packages/common/**
+!services/
+!services/recommendation-service/
+!services/recommendation-service/package.json
+!services/recommendation-service/tsconfig.json
+!services/recommendation-service/tsconfig.build.json
+!services/recommendation-service/nest-cli.json
+!services/recommendation-service/src/
+!services/recommendation-service/src/**
+
+# Không đưa artifact local, test output, Git metadata hoặc secret vào context.
+**/node_modules
+**/dist
+**/coverage
+**/*.spec.ts
+**/*.e2e-spec.ts
+**/.env
+**/.env.*
+**/.git
+**/.gitignore
+**/.vscode
+**/*.log

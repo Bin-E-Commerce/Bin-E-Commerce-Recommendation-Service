@@ -302,10 +302,10 @@ Copy-Item .env.example .env
 Set database, broker, Redis, Qdrant, internal service, and ranking values. Start with:
 
 ```text
-ML_RANKING_ENABLED=false
+ML_RANKING_ENABLED=true
 ```
 
-This keeps Standard Ranking as the only serving mode until the AI model is verified. When enabled in policy, AI is attempted for 100% of requests and falls back to Standard when the model is unavailable.
+This enables the AI adapter for all requests. If the model is not ready or returns an invalid response, the service automatically falls back to Standard Ranking.
 
 > [!IMPORTANT]
 > Recommendation Service stores behavioral events and derived profiles in PostgreSQL, session context and result caches in Redis, and may call Qdrant, Product Service, Auth Service, and AI Service. It also publishes and consumes Kafka events. All of these are server-side connections. To disable recommendation processing, stop the service or disable its deployment. To remove local data, delete only the dedicated development database and Redis logical database after checking that they are not shared.

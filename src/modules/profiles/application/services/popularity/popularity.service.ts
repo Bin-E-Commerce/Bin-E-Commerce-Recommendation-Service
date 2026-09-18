@@ -47,6 +47,7 @@ export class PopularityService {
     for (const item of event.data.items) {
       await this.repository.incrementPurchase(
         {
+          eventId: event.eventId,
           productId: item.productId,
           quantity: item.quantity,
           isReturn,

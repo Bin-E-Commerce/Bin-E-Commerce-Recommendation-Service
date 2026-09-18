@@ -2,6 +2,7 @@
 
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { InternalServiceTokenGuard } from "../../common/security/internal-service-token.guard";
 import { RecommendationInteractionEntity } from "../../database/interactions/entities/interaction.entity";
 import { RecommendationPolicyEntity } from "../../database/policies/entities/policy.entity";
 import { CatalogModule } from "../catalog/catalog.module";
@@ -10,7 +11,6 @@ import { AdminRecommendationController } from "./presentation/controllers/admin-
 import { AdminRecommendationService } from "./application/services/admin-recommendation.service";
 import { AdminRecommendationBootstrapService } from "./application/services/admin-recommendation-bootstrap.service";
 import { RecommendationAdminRepository } from "./infrastructure/repositories/recommendation-admin.repository";
-import { RecommendationAdminInternalGuard } from "./presentation/guards/recommendation-admin-internal.guard";
 import { RecommendationAccountDirectoryClient } from "./infrastructure/clients/recommendation-account-directory.client";
 import { RecommendationModule } from "../recommendation/recommendation.module";
 
@@ -29,7 +29,7 @@ import { RecommendationModule } from "../recommendation/recommendation.module";
     RecommendationAdminRepository,
     AdminRecommendationService,
     AdminRecommendationBootstrapService,
-    RecommendationAdminInternalGuard,
+    InternalServiceTokenGuard,
     RecommendationAccountDirectoryClient,
   ],
 })

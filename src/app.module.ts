@@ -13,6 +13,7 @@ import { CatalogModule } from "./modules/catalog/catalog.module";
 import { RelationsModule } from "./modules/relations/relations.module";
 import { MaintenanceModule } from "./modules/maintenance/maintenance.module";
 import { AdminRecommendationModule } from "./modules/admin-recommendation/admin-recommendation.module";
+import { AnalyticsModule } from "./modules/analytics/analytics.module";
 
 // Khai báo dependency graph của service và kết nối các bounded context vào runtime.
 @Module({
@@ -50,6 +51,7 @@ import { AdminRecommendationModule } from "./modules/admin-recommendation/admin-
     MaintenanceModule,
     RecommendationModule,
     AdminRecommendationModule,
+    AnalyticsModule,
     HealthModule,
   ],
 })

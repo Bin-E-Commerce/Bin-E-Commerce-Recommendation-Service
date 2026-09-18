@@ -55,6 +55,7 @@ export class PopularityRepository {
   // Cộng hoặc trừ purchase aggregate theo item quantity, giữ score không âm khi xử lý return.
   async incrementPurchase(
     input: {
+      eventId: string;
       productId: string;
       quantity: number;
       isReturn: boolean;
@@ -66,6 +67,20 @@ export class PopularityRepository {
     const completedQuantity = input.isReturn ? 0 : input.quantity;
     const returnedQuantity = input.isReturn ? input.quantity : 0;
     const executor = manager ?? this.dataSource.manager;
+    await executor.query(
+      `INSERT INTO recommendation_product_popularity_events
+         (event_id, product_id, occurred_at, purchases, purchase_completed, purchase_returned)
+       VALUES ($1::varchar, $2::varchar, $3::timestamptz, $4::integer, $5::integer, $6::integer)
+       ON CONFLICT (event_id, product_id) DO NOTHING`,
+      [
+        input.eventId,
+        input.productId,
+        input.occurredAt.toISOString(),
+        signedQuantity,
+        completedQuantity,
+        returnedQuantity,
+      ],
+    );
     await executor.query(
       `INSERT INTO recommendation_product_popularity_daily
          (product_id, bucket_date, purchases, purchase_completed, purchase_returned)

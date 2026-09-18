@@ -16,6 +16,7 @@ import {
 } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { Permission } from "@common/auth";
+import { InternalServiceTokenGuard } from "../../../../common/security/internal-service-token.guard";
 import {
   ActivityQueryDto,
   AnalyticsQueryDto,
@@ -23,11 +24,10 @@ import {
 } from "../dto/analytics-query.dto";
 import { UpdateRecommendationPolicyDto } from "../dto/policy.dto";
 import { AdminRecommendationService } from "../../application/services/admin-recommendation.service";
-import { RecommendationAdminInternalGuard } from "../guards/recommendation-admin-internal.guard";
 
 @ApiTags("Admin - Recommendation")
 @Controller("admin/recommendation")
-@UseGuards(RecommendationAdminInternalGuard)
+@UseGuards(InternalServiceTokenGuard)
 export class AdminRecommendationController {
   constructor(private readonly service: AdminRecommendationService) {}
 

@@ -143,16 +143,24 @@ export class RecommendationRedisService implements OnModuleDestroy {
     {
       provide: RECOMMENDATION_REDIS,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) =>
-        new Redis({
-          host: config.get<string>("REDIS_HOST", "localhost"),
-          port: Number(config.get<string>("REDIS_PORT", "6379")),
-          password: config.get<string>("REDIS_PASSWORD") || undefined,
+      useFactory: (config: ConfigService) => {
+        // Dùng URL managed Redis khi có; local vẫn giữ cơ chế host/port cũ.
+        const redisUrl = config.get<string>("REDIS_URL")?.trim();
+        const options = {
           db: Number(config.get<string>("REDIS_DB", "1")),
           lazyConnect: true,
           maxRetriesPerRequest: 1,
           enableOfflineQueue: false,
-        }),
+        };
+        return redisUrl
+          ? new Redis(redisUrl, options)
+          : new Redis({
+              host: config.get<string>("REDIS_HOST", "localhost"),
+              port: Number(config.get<string>("REDIS_PORT", "6379")),
+              password: config.get<string>("REDIS_PASSWORD") || undefined,
+              ...options,
+            });
+      },
     },
     RecommendationRedisService,
   ],

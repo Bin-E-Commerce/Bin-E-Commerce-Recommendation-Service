@@ -3,6 +3,8 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { EntityManager, Repository } from "typeorm";
 import { RecommendationEmbeddingJobEntity } from "../../../../database/embedding/entities/embedding-job.entity";
 
+type RawEmbeddingJobRow = Record<string, unknown>;
+
 // Repository giữ toàn bộ SQL lease/idempotency của embedding dispatcher ngoài application service.
 @Injectable()
 export class EmbeddingJobRepository {
@@ -118,7 +120,7 @@ export class EmbeddingJobRepository {
         WHERE status = 'DISPATCHED' AND leased_until IS NOT NULL AND leased_until < now()`,
       [safeMaxAttempts],
     );
-    return this.repository.query(
+    const queryResult = await this.repository.query(
       `WITH claimed AS (
          SELECT job_id FROM recommendation_embedding_jobs
          WHERE status = 'PENDING' AND available_at <= now()
@@ -146,7 +148,87 @@ export class EmbeddingJobRepository {
          job.updated_at AS "updatedAt",
          job.completed_at AS "completedAt"`,
       [Math.min(Math.max(limit, 1), 100), leaseSeconds],
-    ) as Promise<RecommendationEmbeddingJobEntity[]>;
+    );
+    // Một số TypeORM/Postgres driver versions trả [rows, rowCount] thay vì rows trực tiếp;
+    // lấy đúng phần row trước khi normalize để không biến cả batch thành một row có key 0..N.
+    const rows = Array.isArray(queryResult[0]) ? queryResult[0] : queryResult;
+
+    // TypeORM raw drivers may return either quoted camelCase aliases or physical snake_case columns;
+    // normalize both shapes before the dispatcher builds the Kafka contract so undefined fields cannot reach AI workers.
+    return rows.map((row: RawEmbeddingJobRow) => this.normalizeLeasedJob(row));
+  }
+
+  // Chuẩn hóa raw row thành entity contract ổn định trước khi lease được publish sang Kafka.
+  private normalizeLeasedJob(
+    row: RawEmbeddingJobRow,
+  ): RecommendationEmbeddingJobEntity {
+    const jobId = this.readRequiredString(
+      row.jobId ?? row.jobid ?? row.job_id,
+      "jobId",
+    );
+    const productId = this.readRequiredString(
+      row.productId ?? row.productid ?? row.product_id,
+      "productId",
+    );
+    const contentHash = this.readRequiredString(
+      row.contentHash ?? row.contenthash ?? row.content_hash,
+      "contentHash",
+    );
+    const embeddingProfile = this.readRequiredString(
+      row.embeddingProfile ?? row.embeddingprofile ?? row.embedding_profile,
+      "embeddingProfile",
+    );
+    const modelVersion = this.readRequiredString(
+      row.modelVersion ?? row.modelversion ?? row.model_version,
+      "modelVersion",
+    );
+    const textContent = this.readRequiredString(
+      row.textContent ?? row.textcontent ?? row.text_content,
+      "textContent",
+    );
+
+    return {
+      jobId,
+      productId,
+      contentHash,
+      embeddingProfile: embeddingProfile as "product-content-v1",
+      modelVersion,
+      textContent,
+      status: (row.status ??
+        "PROCESSING") as RecommendationEmbeddingJobEntity["status"],
+      attemptCount: Number(
+        row.attemptCount ?? row.attemptcount ?? row.attempt_count ?? 0,
+      ),
+      leasedUntil: (row.leasedUntil ??
+        row.leaseduntil ??
+        row.leased_until ??
+        null) as Date | null,
+      availableAt: (row.availableAt ??
+        row.availableat ??
+        row.available_at) as Date,
+      lastErrorCode: (row.lastErrorCode ??
+        row.lasterrorcode ??
+        row.last_error_code ??
+        null) as string | null,
+      lastErrorAt: (row.lastErrorAt ??
+        row.lasterrorat ??
+        row.last_error_at ??
+        null) as Date | null,
+      createdAt: (row.createdAt ?? row.createdat ?? row.created_at) as Date,
+      updatedAt: (row.updatedAt ?? row.updatedat ?? row.updated_at) as Date,
+      completedAt: (row.completedAt ??
+        row.completedat ??
+        row.completed_at ??
+        null) as Date | null,
+    };
+  }
+
+  // Từ chối row thiếu dữ liệu bắt buộc để không phát Kafka event hỏng và làm worker đẩy vào DLQ.
+  private readRequiredString(value: unknown, field: string): string {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`EMBEDDING_JOB_ROW_MISSING_${field}`);
+    }
+    return value;
   }
 
   // Chỉ đánh dấu dispatched sau khi Kafka producer xác nhận publish thành công.

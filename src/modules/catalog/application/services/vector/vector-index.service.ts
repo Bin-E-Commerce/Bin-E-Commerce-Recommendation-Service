@@ -25,6 +25,7 @@ export interface SemanticVectorResult {
 export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(VectorIndexService.name);
   private readonly baseUrl: string;
+  private readonly apiKey: string | undefined;
   private readonly alias: string;
   private readonly collectionVersion: string;
   private readonly modelVersion: string;
@@ -44,6 +45,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     this.baseUrl = config
       .get<string>("QDRANT_URL", "http://localhost:6333")
       .replace(/\/$/, "");
+    this.apiKey = config.get<string>("QDRANT_API_KEY")?.trim() || undefined;
     this.alias = config.get<string>(
       "QDRANT_COLLECTION_ALIAS",
       "recommendation_product_embeddings_current",
@@ -460,6 +462,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         ...init,
         headers: {
           "content-type": "application/json",
+          ...(this.apiKey ? { "api-key": this.apiKey } : {}),
           ...(init.headers ?? {}),
         },
         signal: controller.signal,

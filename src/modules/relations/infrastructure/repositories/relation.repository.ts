@@ -174,9 +174,32 @@ export class RelationRepository {
     manager?: EntityManager,
   ): Promise<void> {
     if (inputs.length === 0) return;
+    // Nhiều event khác nhau có thể cùng tạo một directed product pair trong một batch.
+    // PostgreSQL không cho một INSERT ... ON CONFLICT cập nhật cùng row hai lần, nên phải cộng delta trước.
+    const aggregated = new Map<string, (typeof inputs)[number]>();
+    for (const input of inputs) {
+      const key = `${input.sourceProductId}\u0000${input.targetProductId}\u0000${input.relationType}`;
+      const current = aggregated.get(key);
+      if (!current) {
+        aggregated.set(key, { ...input });
+        continue;
+      }
+
+      current.positiveDelta += input.positiveDelta;
+      current.negativeDelta += input.negativeDelta;
+      current.scoreDelta += input.scoreDelta;
+      if (input.signalAt > current.signalAt) current.signalAt = input.signalAt;
+      if (input.windowStart < current.windowStart) {
+        current.windowStart = input.windowStart;
+      }
+      if (input.windowEnd > current.windowEnd) {
+        current.windowEnd = input.windowEnd;
+      }
+    }
+
     const values: string[] = [];
     const parameters: Array<string | number | Date> = [];
-    for (const [index, input] of inputs.entries()) {
+    for (const [index, input] of [...aggregated.values()].entries()) {
       const offset = index * 9;
       values.push(
         `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9})`,

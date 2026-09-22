@@ -17,6 +17,7 @@ import {
   getNextKafkaOffset,
 } from "../../config/kafka.constants";
 import { KafkaProducerService } from "../../producers/kafka-producer.service";
+import { MetricsService } from "../../../modules/health/metrics.service";
 
 // Consumer group riêng cho embedding completion; AI/Qdrant retry không block interaction/profile projection.
 @Injectable()
@@ -26,6 +27,7 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
   private started = false;
   private stopping = false;
   private restartTimer?: NodeJS.Timeout;
+  private failureCount = 0;
 
   constructor(
     private readonly config: ConfigService,
@@ -33,6 +35,7 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
     private readonly vector: VectorIndexService,
     private readonly jobs: EmbeddingJobRepository,
     private readonly producer: KafkaProducerService,
+    private readonly metrics: MetricsService,
   ) {
     const brokers = config
       .get<string>("KAFKA_BROKERS", "localhost:29092")
@@ -68,6 +71,14 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
         fromBeginning: false,
       });
       this.started = true;
+      this.failureCount = 0;
+      this.metrics.setGauge("recommendation_kafka_consumer_available", 1, {
+        consumer: RECOMMENDATION_EMBEDDING_GROUP,
+        topic: RECOMMENDATION_EMBEDDING_GENERATED_TOPIC,
+      });
+      this.metrics.increment("recommendation_kafka_consumer_connected_total", {
+        consumer: RECOMMENDATION_EMBEDDING_GROUP,
+      });
       await this.consumer.run({
         autoCommit: false,
         eachMessage: async ({ topic, partition, message }) => {
@@ -207,9 +218,21 @@ export class EmbeddingConsumerService implements OnModuleInit, OnModuleDestroy {
         },
       });
     } catch (error) {
-      this.logger.warn(
-        `Embedding consumer unavailable: ${error instanceof Error ? error.message : "unknown"}`,
-      );
+      this.failureCount += 1;
+      this.metrics.setGauge("recommendation_kafka_consumer_available", 0, {
+        consumer: RECOMMENDATION_EMBEDDING_GROUP,
+        topic: RECOMMENDATION_EMBEDDING_GENERATED_TOPIC,
+      });
+      this.metrics.increment("recommendation_kafka_consumer_errors_total", {
+        consumer: RECOMMENDATION_EMBEDDING_GROUP,
+        topic: RECOMMENDATION_EMBEDDING_GENERATED_TOPIC,
+      });
+      // Kafka có thể lặp lỗi metadata khi broker chưa có leader; chỉ log lần đầu và mỗi phút để Loki không bị ngập.
+      if (this.failureCount === 1 || this.failureCount % 12 === 0) {
+        this.logger.warn(
+          `Embedding consumer unavailable: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
       if (this.started) await this.consumer.disconnect().catch(() => undefined);
       this.started = false;
       if (!this.stopping) {

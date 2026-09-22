@@ -9,13 +9,27 @@ type MetricLabels = Record<string, string>;
 @Injectable()
 export class MetricsService {
   private readonly counters = new Map<string, number>();
+  private readonly gauges = new Map<string, number>();
   private readonly startedAt = Date.now();
 
   // Tăng counter theo label hữu hạn; label động bị bỏ qua để tránh làm Prometheus phình không kiểm soát.
   increment(name: string, labels: MetricLabels = {}, amount = 1): void {
     const safeLabels = Object.entries(labels)
       .filter(([key]) =>
-        ["status", "source", "surface", "variant", "error_code"].includes(key),
+        [
+          "service",
+          "method",
+          "route",
+          "status",
+          "status_class",
+          "source",
+          "surface",
+          "variant",
+          "error_code",
+          "topic",
+          "consumer",
+          "dependency",
+        ].includes(key),
       )
       .sort(([left], [right]) => left.localeCompare(right));
     const key =
@@ -23,6 +37,17 @@ export class MetricsService {
       "|" +
       safeLabels.map(([label, value]) => label + "=" + value).join(",");
     this.counters.set(key, (this.counters.get(key) ?? 0) + amount);
+  }
+
+  // Ghi trạng thái dependency hoặc consumer với label bounded để Grafana cảnh báo được down/up.
+  setGauge(name: string, value: number, labels: MetricLabels = {}): void {
+    const safeLabels = Object.entries(labels)
+      .filter(([key]) =>
+        ["consumer", "topic", "dependency", "service"].includes(key),
+      )
+      .sort(([left], [right]) => left.localeCompare(right));
+    const key = `${name}|${safeLabels.map(([label, labelValue]) => `${label}=${labelValue}`).join(",")}`;
+    this.gauges.set(key, value);
   }
 
   // Xuất snapshot metric có HELP/TYPE để Prometheus scrape ổn định và không chứa dữ liệu định danh.
@@ -56,6 +81,24 @@ export class MetricsService {
             .join(",") +
           "}"
         : "";
+      lines.push(name + labels + " " + value);
+    }
+    for (const [key, value] of this.gauges.entries()) {
+      const parts = key.split("|");
+      const name: string = parts[0] ?? "recommendation_invalid_gauge";
+      const rawLabels: string = parts[1] ?? "";
+      const labels = rawLabels
+        ? "{" +
+          rawLabels
+            .split(",")
+            .map((item) => {
+              const [label = "label", labelValue = "unknown"] = item.split("=");
+              return label + '="' + labelValue.replaceAll('"', '\\"') + '"';
+            })
+            .join(",") +
+          "}"
+        : "";
+      lines.push("# TYPE " + name + " gauge");
       lines.push(name + labels + " " + value);
     }
     return lines.join("\n") + "\n";

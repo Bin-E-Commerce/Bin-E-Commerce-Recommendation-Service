@@ -1,5 +1,3 @@
-// Producer này gửi interaction đã được Gateway chấp nhận vào Kafka và báo lỗi rõ ràng khi chưa queue được event.
-
 import {
   Injectable,
   Logger,

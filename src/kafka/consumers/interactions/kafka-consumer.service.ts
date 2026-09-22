@@ -8,14 +8,14 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Consumer, Kafka } from "kafkajs";
-import { InteractionMessageProcessor } from "./processors/interaction-message.processor";
-import { CatalogService } from "../../modules/catalog/application/services/catalog/catalog.service";
-import { ProfileProjectionService } from "../../modules/profiles/application/services/profile/profile-projection.service";
-import { KafkaEventProcessor } from "./processors/kafka-event.processor";
+import { InteractionMessageProcessor } from "../processors/interaction-message.processor";
+import { CatalogService } from "../../../modules/catalog/application/services/catalog/catalog.service";
+import { ProfileProjectionService } from "../../../modules/profiles/application/services/profile/profile-projection.service";
+import { KafkaEventProcessor } from "../processors/kafka-event.processor";
 import {
   validateCatalogEvent,
   validatePurchaseEvent,
-} from "./validators/event.validators";
+} from "../validators/event.validators";
 import {
   RECOMMENDATION_CATALOG_DLQ_TOPIC,
   RECOMMENDATION_CATALOG_TOPICS,
@@ -23,7 +23,7 @@ import {
   RECOMMENDATION_PURCHASE_DLQ_TOPIC,
   RECOMMENDATION_PURCHASE_TOPICS,
   getNextKafkaOffset,
-} from "../config/kafka.constants";
+} from "../../config/kafka.constants";
 
 @Injectable()
 export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {

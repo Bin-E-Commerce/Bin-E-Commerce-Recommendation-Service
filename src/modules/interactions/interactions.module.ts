@@ -3,7 +3,7 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { KafkaModule } from "../../kafka/kafka.module";
-import { KafkaConsumerService } from "../../kafka/consumers/kafka-consumer.service";
+import { KafkaConsumerService } from "../../kafka/consumers/interactions/kafka-consumer.service";
 import { RecommendationInteractionEntity } from "../../database/interactions/entities/interaction.entity";
 import { InteractionController } from "./presentation/controllers/interaction.controller";
 import { InteractionIngestionService } from "./application/services/ingestion/interaction-ingestion.service";

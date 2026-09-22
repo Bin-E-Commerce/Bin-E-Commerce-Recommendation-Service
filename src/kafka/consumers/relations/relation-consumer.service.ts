@@ -21,11 +21,11 @@ import {
   RECOMMENDATION_PURCHASE_TOPICS,
   RECOMMENDATION_RELATION_DLQ_TOPIC,
   RECOMMENDATION_RELATION_GROUP,
-} from "../config/kafka.constants";
-import { RelationProjectionService } from "../../modules/relations/application/services/projection/relation-projection.service";
-import { KafkaProducerService } from "../producers/kafka-producer.service";
-import { validateInteractionEvent } from "../../modules/interactions/application/utils/interaction-event.validator";
-import { validatePurchaseEvent } from "./validators/event.validators";
+} from "../../config/kafka.constants";
+import { RelationProjectionService } from "../../../modules/relations/application/services/projection/relation-projection.service";
+import { KafkaProducerService } from "../../producers/kafka-producer.service";
+import { validateInteractionEvent } from "../../../modules/interactions/application/utils/interaction-event.validator";
+import { validatePurchaseEvent } from "../validators/event.validators";
 
 // Consumer group riêng cho relation pair generation; query nặng không block profile interaction consumer.
 @Injectable()

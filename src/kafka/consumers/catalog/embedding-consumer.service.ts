@@ -7,16 +7,16 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { Consumer, Kafka } from "kafkajs";
 import type { RecommendationEmbeddingGeneratedEvent } from "@common/kafka/events/recommendation.events";
-import { CatalogProductRepository } from "../../modules/catalog/infrastructure/repositories/catalog-product.repository";
-import { VectorIndexService } from "../../modules/catalog/application/services/vector/vector-index.service";
-import { EmbeddingJobRepository } from "../../modules/catalog/infrastructure/repositories/embedding-job.repository";
+import { CatalogProductRepository } from "../../../modules/catalog/infrastructure/repositories/catalog-product.repository";
+import { VectorIndexService } from "../../../modules/catalog/application/services/vector/vector-index.service";
+import { EmbeddingJobRepository } from "../../../modules/catalog/infrastructure/repositories/embedding-job.repository";
 import {
   RECOMMENDATION_EMBEDDING_DLQ_TOPIC,
   RECOMMENDATION_EMBEDDING_GENERATED_TOPIC,
   RECOMMENDATION_EMBEDDING_GROUP,
   getNextKafkaOffset,
-} from "../config/kafka.constants";
-import { KafkaProducerService } from "../producers/kafka-producer.service";
+} from "../../config/kafka.constants";
+import { KafkaProducerService } from "../../producers/kafka-producer.service";
 
 // Consumer group riêng cho embedding completion; AI/Qdrant retry không block interaction/profile projection.
 @Injectable()

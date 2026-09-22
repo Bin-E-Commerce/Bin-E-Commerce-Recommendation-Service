@@ -12,7 +12,7 @@ import { EmbeddingJobRepository } from "./infrastructure/repositories/embedding-
 import { EmbeddingJobService } from "./application/services/embedding/embedding-job.service";
 import { SemanticContentService } from "./application/services/semantic/semantic-content.service";
 import { VectorIndexService } from "./application/services/vector/vector-index.service";
-import { EmbeddingConsumerService } from "../../kafka/consumers/embedding-consumer.service";
+import { EmbeddingConsumerService } from "../../kafka/consumers/catalog/embedding-consumer.service";
 import { CatalogSyncCheckpointRepository } from "./infrastructure/repositories/catalog-sync-checkpoint.repository";
 
 @Module({

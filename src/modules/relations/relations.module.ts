@@ -7,7 +7,7 @@ import { RecommendationRelationPairEventEntity } from "../../database/relations/
 import { RelationRepository } from "./infrastructure/repositories/relation.repository";
 import { RelationProjectionService } from "./application/services/projection/relation-projection.service";
 import { RelationCandidateService } from "./application/services/candidates/relation-candidate.service";
-import { RelationConsumerService } from "../../kafka/consumers/relation-consumer.service";
+import { RelationConsumerService } from "../../kafka/consumers/relations/relation-consumer.service";
 import { ProfilesModule } from "../profiles/profiles.module";
 
 // Bounded context relations sở hữu projection và query adapter, không phụ thuộc Product/Order database.

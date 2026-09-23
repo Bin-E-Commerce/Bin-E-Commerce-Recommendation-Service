@@ -20,7 +20,9 @@ COPY services/recommendation-service/package.json \
 
 # npm ci bảo đảm dependency trong image đúng với package-lock của monorepo.
 # Giữ devDependency ở builder vì Nest CLI và TypeScript cần cho bước compile.
-RUN npm ci --workspace=services/recommendation-service --include=dev --ignore-scripts
+ENV NODE_ENV=development
+RUN npm ci --workspace=services/recommendation-service --include=dev --bin-links=true --ignore-scripts \
+  && test -x node_modules/.bin/nest
 
 # Chỉ copy source của Recommendation sau khi dependency đã được cache.
 COPY services/recommendation-service/src ./services/recommendation-service/src

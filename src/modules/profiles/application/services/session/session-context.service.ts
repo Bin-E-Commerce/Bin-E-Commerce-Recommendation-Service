@@ -1,183 +1,189 @@
 // Service này giữ session intent ngắn hạn trong Redis; mọi lỗi cache đều được chuyển thành context rỗng an toàn.
 
-import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { RecommendationRedisService } from "../../../../../infrastructure/redis/redis.module";
-import type { SessionContext } from "../../types/profile.types";
-import type { RecommendationInteractionRecordedEvent } from "../../../../interactions/application/types/interaction-event.types";
-import { RecommendationRuleService } from "../rules/recommendation-rule.service";
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { RecommendationRedisService } from '@/infrastructure/redis/redis.module';
+import type { SessionContext } from '@/modules/profiles/application/types/profile.types';
+import type { RecommendationInteractionRecordedEvent } from '@/modules/interactions/application/types/interaction-event.types';
+import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 
 @Injectable()
 export class SessionContextService {
-  private readonly sessionTtlSeconds: number;
-  private readonly maxRecentItems: number;
+    private readonly sessionTtlSeconds: number;
+    private readonly maxRecentItems: number;
 
-  constructor(
-    private readonly redis: RecommendationRedisService,
-    private readonly rules: RecommendationRuleService,
-    private readonly config: ConfigService,
-  ) {
-    this.sessionTtlSeconds = this.readConfigNumber(
-      "RECOMMENDATION_SESSION_TTL_SECONDS",
-      24 * 60 * 60,
-      60,
-      7 * 24 * 60 * 60,
-    );
-    this.maxRecentItems = this.readConfigNumber(
-      "RECOMMENDATION_SESSION_MAX_RECENT_ITEMS",
-      30,
-      1,
-      100,
-    );
-  }
-
-  // Đọc session context để candidate engine hiểu ý định hiện tại của guest/user trong cùng phiên.
-  async get(sessionId: string): Promise<SessionContext | null> {
-    return this.redis.getJson<SessionContext>(this.key(sessionId));
-  }
-
-  // Cập nhật recent products/category/query theo event mới nhất và kéo dài TTL của phiên hoạt động.
-  async apply(
-    event: RecommendationInteractionRecordedEvent,
-    categoryId?: string | null,
-    brandId?: string | null,
-  ): Promise<void> {
-    const sessionId = event.data.sessionId;
-    if (!sessionId) return;
-    // Dùng compare-and-set theo version thay GET/SET nối tiếp để event đồng thời không ghi đè context của nhau.
-    const key = this.key(sessionId);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const previous = (await this.get(sessionId)) ?? this.empty(sessionId);
-      const now = new Date(event.occurredAt).getTime();
-      if (new Date(previous.intentUpdatedAt).getTime() > now) return;
-      const isPassiveImpression =
-        event.data.interactionType === "PRODUCT_IMPRESSED";
-      const next: SessionContext = {
-        ...previous,
-        currentProductId: isPassiveImpression
-          ? previous.currentProductId
-          : (event.data.productId ?? previous.currentProductId),
-        currentCategoryId: isPassiveImpression
-          ? previous.currentCategoryId
-          : (categoryId ?? event.data.categoryId ?? previous.currentCategoryId),
-        latestQuery: event.data.query ?? previous.latestQuery,
-        recentProductIds: isPassiveImpression
-          ? previous.recentProductIds
-          : this.unshift(event.data.productId, previous.recentProductIds),
-        recentProductSignals: isPassiveImpression
-          ? (previous.recentProductSignals ?? [])
-          : this.unshiftSignal(
-              event.data.productId,
-              event.data.interactionType,
-              previous.recentProductSignals ?? [],
-            ),
-        recentCategoryIds: isPassiveImpression
-          ? previous.recentCategoryIds
-          : this.unshift(
-              categoryId ?? event.data.categoryId,
-              previous.recentCategoryIds,
-            ),
-        recentBrandIds: isPassiveImpression
-          ? previous.recentBrandIds
-          : this.unshift(brandId, previous.recentBrandIds),
-        cartProductIds: this.updateCart(
-          event.data.interactionType,
-          event.data.productId,
-          previous.cartProductIds,
-        ),
-        intentUpdatedAt: event.occurredAt,
-        version: previous.version + 1,
-      };
-      if (
-        await this.redis.compareAndSetJson(
-          key,
-          previous.version,
-          next,
-          this.sessionTtlSeconds,
-        )
-      )
-        return;
+    constructor(
+        private readonly redis: RecommendationRedisService,
+        private readonly rules: RecommendationRuleService,
+        private readonly config: ConfigService,
+    ) {
+        this.sessionTtlSeconds = this.readConfigNumber(
+            'RECOMMENDATION_SESSION_TTL_SECONDS',
+            24 * 60 * 60,
+            60,
+            7 * 24 * 60 * 60,
+        );
+        this.maxRecentItems = this.readConfigNumber(
+            'RECOMMENDATION_SESSION_MAX_RECENT_ITEMS',
+            30,
+            1,
+            100,
+        );
     }
-  }
 
-  // Xóa session context sau merge hoặc khi session cần bắt đầu lại mà không ảnh hưởng profile durable.
-  async invalidate(sessionId: string): Promise<void> {
-    await this.redis.invalidate(this.key(sessionId));
-  }
+    // Đọc session context để candidate engine hiểu ý định hiện tại của guest/user trong cùng phiên.
+    async get(sessionId: string): Promise<SessionContext | null> {
+        return this.redis.getJson<SessionContext>(this.key(sessionId));
+    }
 
-  // Tạo context mặc định để xử lý guest mới mà không cần khởi tạo record trước.
-  private empty(sessionId: string): SessionContext {
-    return {
-      sessionId,
-      recentProductIds: [],
-      recentProductSignals: [],
-      recentCategoryIds: [],
-      recentBrandIds: [],
-      currentProductId: null,
-      currentCategoryId: null,
-      latestQuery: null,
-      cartProductIds: [],
-      intentUpdatedAt: new Date(0).toISOString(),
-      version: 0,
-    };
-  }
+    // Cập nhật recent products/category/query theo event mới nhất và kéo dài TTL của phiên hoạt động.
+    async apply(
+        event: RecommendationInteractionRecordedEvent,
+        categoryId?: string | null,
+        brandId?: string | null,
+    ): Promise<void> {
+        const sessionId = event.data.sessionId;
+        if (!sessionId) return;
+        // Dùng compare-and-set theo version thay GET/SET nối tiếp để event đồng thời không ghi đè context của nhau.
+        const key = this.key(sessionId);
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const previous =
+                (await this.get(sessionId)) ?? this.empty(sessionId);
+            const now = new Date(event.occurredAt).getTime();
+            if (new Date(previous.intentUpdatedAt).getTime() > now) return;
+            const isPassiveImpression =
+                event.data.interactionType === 'PRODUCT_IMPRESSED';
+            const next: SessionContext = {
+                ...previous,
+                currentProductId: isPassiveImpression
+                    ? previous.currentProductId
+                    : (event.data.productId ?? previous.currentProductId),
+                currentCategoryId: isPassiveImpression
+                    ? previous.currentCategoryId
+                    : (categoryId ??
+                      event.data.categoryId ??
+                      previous.currentCategoryId),
+                latestQuery: event.data.query ?? previous.latestQuery,
+                recentProductIds: isPassiveImpression
+                    ? previous.recentProductIds
+                    : this.unshift(
+                          event.data.productId,
+                          previous.recentProductIds,
+                      ),
+                recentProductSignals: isPassiveImpression
+                    ? (previous.recentProductSignals ?? [])
+                    : this.unshiftSignal(
+                          event.data.productId,
+                          event.data.interactionType,
+                          previous.recentProductSignals ?? [],
+                      ),
+                recentCategoryIds: isPassiveImpression
+                    ? previous.recentCategoryIds
+                    : this.unshift(
+                          categoryId ?? event.data.categoryId,
+                          previous.recentCategoryIds,
+                      ),
+                recentBrandIds: isPassiveImpression
+                    ? previous.recentBrandIds
+                    : this.unshift(brandId, previous.recentBrandIds),
+                cartProductIds: this.updateCart(
+                    event.data.interactionType,
+                    event.data.productId,
+                    previous.cartProductIds,
+                ),
+                intentUpdatedAt: event.occurredAt,
+                version: previous.version + 1,
+            };
+            if (
+                await this.redis.compareAndSetJson(
+                    key,
+                    previous.version,
+                    next,
+                    this.sessionTtlSeconds,
+                )
+            )
+                return;
+        }
+    }
 
-  // Đưa key lên đầu, loại duplicate và giới hạn kích thước để Redis không phình theo session dài.
-  private unshift(
-    value: string | null | undefined,
-    values: string[],
-  ): string[] {
-    if (!value) return values;
-    return [value, ...values.filter((item) => item !== value)].slice(
-      0,
-      this.maxRecentItems,
-    );
-  }
+    // Xóa session context sau merge hoặc khi session cần bắt đầu lại mà không ảnh hưởng profile durable.
+    async invalidate(sessionId: string): Promise<void> {
+        await this.redis.invalidate(this.key(sessionId));
+    }
 
-  // Cart add/remove là context mạnh hơn view nên được giữ riêng để candidate tránh hoặc ưu tiên đúng sản phẩm.
-  private updateCart(
-    type: string,
-    productId: string | null,
-    values: string[],
-  ): string[] {
-    if (!productId) return values;
-    if (type === "PRODUCT_ADDED_TO_CART")
-      return this.unshift(productId, values);
-    if (type === "PRODUCT_REMOVED_FROM_CART")
-      return values.filter((item) => item !== productId);
-    return values;
-  }
+    // Tạo context mặc định để xử lý guest mới mà không cần khởi tạo record trước.
+    private empty(sessionId: string): SessionContext {
+        return {
+            sessionId,
+            recentProductIds: [],
+            recentProductSignals: [],
+            recentCategoryIds: [],
+            recentBrandIds: [],
+            currentProductId: null,
+            currentCategoryId: null,
+            latestQuery: null,
+            cartProductIds: [],
+            intentUpdatedAt: new Date(0).toISOString(),
+            version: 0,
+        };
+    }
 
-  // Lưu trọng số ngắn hạn để semantic retrieval phân biệt hành vi mạnh/yếu; impression không được đưa vào anchor.
-  private unshiftSignal(
-    productId: string | null | undefined,
-    interactionType: string,
-    values: SessionContext["recentProductSignals"],
-  ): NonNullable<SessionContext["recentProductSignals"]> {
-    if (!productId) return values ?? [];
-    const weight = this.rules.getInteractionWeight(interactionType);
-    if (weight === 0) return values ?? [];
-    return [
-      { productId, weight, interactionType },
-      ...(values ?? []).filter((item) => item.productId !== productId),
-    ].slice(0, this.maxRecentItems);
-  }
+    // Đưa key lên đầu, loại duplicate và giới hạn kích thước để Redis không phình theo session dài.
+    private unshift(
+        value: string | null | undefined,
+        values: string[],
+    ): string[] {
+        if (!value) return values;
+        return [value, ...values.filter((item) => item !== value)].slice(
+            0,
+            this.maxRecentItems,
+        );
+    }
 
-  // Chuẩn hóa key Redis để các surface dùng cùng session context và invalidation không bị lệch namespace.
-  private key(sessionId: string): string {
-    return `recommendation:session:${sessionId}:context`;
-  }
+    // Cart add/remove là context mạnh hơn view nên được giữ riêng để candidate tránh hoặc ưu tiên đúng sản phẩm.
+    private updateCart(
+        type: string,
+        productId: string | null,
+        values: string[],
+    ): string[] {
+        if (!productId) return values;
+        if (type === 'PRODUCT_ADDED_TO_CART')
+            return this.unshift(productId, values);
+        if (type === 'PRODUCT_REMOVED_FROM_CART')
+            return values.filter((item) => item !== productId);
+        return values;
+    }
 
-  // Giới hạn config số để TTL/size sai không làm session phình hoặc Redis giữ dữ liệu vô thời hạn.
-  private readConfigNumber(
-    key: string,
-    fallback: number,
-    minimum: number,
-    maximum: number,
-  ): number {
-    const value = Number(this.config.get<string>(key, String(fallback)));
-    return Number.isFinite(value)
-      ? Math.min(Math.max(Math.trunc(value), minimum), maximum)
-      : fallback;
-  }
+    // Lưu trọng số ngắn hạn để semantic retrieval phân biệt hành vi mạnh/yếu; impression không được đưa vào anchor.
+    private unshiftSignal(
+        productId: string | null | undefined,
+        interactionType: string,
+        values: SessionContext['recentProductSignals'],
+    ): NonNullable<SessionContext['recentProductSignals']> {
+        if (!productId) return values ?? [];
+        const weight = this.rules.getInteractionWeight(interactionType);
+        if (weight === 0) return values ?? [];
+        return [
+            { productId, weight, interactionType },
+            ...(values ?? []).filter((item) => item.productId !== productId),
+        ].slice(0, this.maxRecentItems);
+    }
+
+    // Chuẩn hóa key Redis để các surface dùng cùng session context và invalidation không bị lệch namespace.
+    private key(sessionId: string): string {
+        return `recommendation:session:${sessionId}:context`;
+    }
+
+    // Giới hạn config số để TTL/size sai không làm session phình hoặc Redis giữ dữ liệu vô thời hạn.
+    private readConfigNumber(
+        key: string,
+        fallback: number,
+        minimum: number,
+        maximum: number,
+    ): number {
+        const value = Number(this.config.get<string>(key, String(fallback)));
+        return Number.isFinite(value)
+            ? Math.min(Math.max(Math.trunc(value), minimum), maximum)
+            : fallback;
+    }
 }

@@ -1,16 +1,14 @@
 // Migration này tạo interaction read model độc lập, có unique event_id và index theo actor/product để phục vụ Phase 2.
 
-import { MigrationInterface, QueryRunner } from "typeorm";
+import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class CreateRecommendationInteractions1788020000000
-  implements MigrationInterface
-{
-  name = "CreateRecommendationInteractions1788020000000";
+export class CreateRecommendationInteractions1788020000000 implements MigrationInterface {
+    name = 'CreateRecommendationInteractions1788020000000';
 
-  // Tạo bảng và constraint ở database để bảo vệ dữ liệu kể cả khi consumer bị redelivery hoặc bypass application.
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
-    await queryRunner.query(`
+    // Tạo bảng và constraint ở database để bảo vệ dữ liệu kể cả khi consumer bị redelivery hoặc bypass application.
+    public async up(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+        await queryRunner.query(`
       CREATE TABLE "recommendation_interactions" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "event_id" varchar(128) NOT NULL,
@@ -47,25 +45,33 @@ export class CreateRecommendationInteractions1788020000000
       )
     `);
 
-    await queryRunner.query(`
+        await queryRunner.query(`
       CREATE INDEX "IDX_recommendation_interactions_user_occurred"
       ON "recommendation_interactions" ("user_id", "occurred_at")
     `);
-    await queryRunner.query(`
+        await queryRunner.query(`
       CREATE INDEX "IDX_recommendation_interactions_session_occurred"
       ON "recommendation_interactions" ("session_id", "occurred_at")
     `);
-    await queryRunner.query(`
+        await queryRunner.query(`
       CREATE INDEX "IDX_recommendation_interactions_product_occurred"
       ON "recommendation_interactions" ("product_id", "occurred_at")
     `);
-  }
+    }
 
-  // Xóa đúng các index/table do migration sở hữu khi rollback, không đụng vào database service khác.
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_interactions_product_occurred"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_interactions_session_occurred"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_interactions_user_occurred"`);
-    await queryRunner.query(`DROP TABLE IF EXISTS "recommendation_interactions"`);
-  }
+    // Xóa đúng các index/table do migration sở hữu khi rollback, không đụng vào database service khác.
+    public async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_interactions_product_occurred"`,
+        );
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_interactions_session_occurred"`,
+        );
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_interactions_user_occurred"`,
+        );
+        await queryRunner.query(
+            `DROP TABLE IF EXISTS "recommendation_interactions"`,
+        );
+    }
 }

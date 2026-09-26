@@ -1,69 +1,73 @@
 // File này lắp các module hạ tầng và bounded context của Recommendation Service.
 // File không truy vấn database của Product, Order hay Seller Service trực tiếp.
 
-import { Module } from "@nestjs/common";
-import { ConfigModule, ConfigService } from "@nestjs/config";
-import { TypeOrmModule } from "@nestjs/typeorm";
-import { KafkaModule } from "./kafka/kafka.module";
-import { HealthModule } from "./modules/health/health.module";
-import { InteractionsModule } from "./modules/interactions/interactions.module";
-import { RecommendationRedisModule } from "./infrastructure/redis/redis.module";
-import { RecommendationModule } from "./modules/recommendation/recommendation.module";
-import { CatalogModule } from "./modules/catalog/catalog.module";
-import { RelationsModule } from "./modules/relations/relations.module";
-import { MaintenanceModule } from "./modules/maintenance/maintenance.module";
-import { AdminRecommendationModule } from "./modules/admin-recommendation/admin-recommendation.module";
-import { AnalyticsModule } from "./modules/analytics/analytics.module";
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { KafkaModule } from '@/kafka/kafka.module';
+import { HealthModule } from '@/modules/health/health.module';
+import { InteractionsModule } from '@/modules/interactions/interactions.module';
+import { RecommendationRedisModule } from '@/infrastructure/redis/redis.module';
+import { RecommendationModule } from '@/modules/recommendation/recommendation.module';
+import { CatalogModule } from '@/modules/catalog/catalog.module';
+import { RelationsModule } from '@/modules/relations/relations.module';
+import { MaintenanceModule } from '@/modules/maintenance/maintenance.module';
+import { AdminRecommendationModule } from '@/modules/admin-recommendation/admin-recommendation.module';
+import { AnalyticsModule } from '@/modules/analytics/analytics.module';
 
 // Khai báo dependency graph của service và kết nối các bounded context vào runtime.
 @Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      envFilePath: [".env.local", ".env"],
-    }),
-    TypeOrmModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: "postgres" as const,
-        host: config.get<string>("POSTGRES_HOST", "localhost"),
-        port: Number(config.get<string>("POSTGRES_PORT", "5432")),
-        username: config.get<string>("POSTGRES_USER"),
-        password: config.get<string>("POSTGRES_PASSWORD"),
-        database: config.get<string>("POSTGRES_DB"),
-        entities: [__dirname + "/**/*.entity{.ts,.js}"],
-        migrations: [__dirname + "/database/migrations/*{.ts,.js}"],
-        // Migration là nguồn thay đổi schema duy nhất cho toàn bộ read model của service.
-        migrationsRun: true,
-        synchronize: false,
-        ssl:
-          config.get<string>("POSTGRES_SSL", "false") === "true"
-            ? { rejectUnauthorized: false }
-            : false,
-        // Giữ tối thiểu một kết nối ấm và giới hạn pool để giảm độ trễ khi dùng PostgreSQL cloud.
-        extra: {
-          min: Number(config.get<string>("POSTGRES_POOL_MIN", "1")),
-          max: Number(config.get<string>("POSTGRES_POOL_MAX", "5")),
-          idleTimeoutMillis: Number(
-            config.get<string>("POSTGRES_IDLE_TIMEOUT_MS", "30000"),
-          ),
-          connectionTimeoutMillis: Number(
-            config.get<string>("POSTGRES_CONNECTION_TIMEOUT_MS", "10000"),
-          ),
-        },
-        logging: config.get<string>("TYPEORM_LOGGING", "false") === "true",
-      }),
-    }),
-    KafkaModule,
-    RecommendationRedisModule,
-    InteractionsModule,
-    CatalogModule,
-    RelationsModule,
-    MaintenanceModule,
-    RecommendationModule,
-    AdminRecommendationModule,
-    AnalyticsModule,
-    HealthModule,
-  ],
+    imports: [
+        ConfigModule.forRoot({
+            isGlobal: true,
+            envFilePath: ['.env.local', '.env'],
+        }),
+        TypeOrmModule.forRootAsync({
+            inject: [ConfigService],
+            useFactory: (config: ConfigService) => ({
+                type: 'postgres' as const,
+                host: config.get<string>('POSTGRES_HOST', 'localhost'),
+                port: Number(config.get<string>('POSTGRES_PORT', '5432')),
+                username: config.get<string>('POSTGRES_USER'),
+                password: config.get<string>('POSTGRES_PASSWORD'),
+                database: config.get<string>('POSTGRES_DB'),
+                entities: [__dirname + '/**/*.entity{.ts,.js}'],
+                migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
+                // Migration là nguồn thay đổi schema duy nhất cho toàn bộ read model của service.
+                migrationsRun: true,
+                synchronize: false,
+                ssl:
+                    config.get<string>('POSTGRES_SSL', 'false') === 'true'
+                        ? { rejectUnauthorized: false }
+                        : false,
+                // Giữ tối thiểu một kết nối ấm và giới hạn pool để giảm độ trễ khi dùng PostgreSQL cloud.
+                extra: {
+                    min: Number(config.get<string>('POSTGRES_POOL_MIN', '1')),
+                    max: Number(config.get<string>('POSTGRES_POOL_MAX', '5')),
+                    idleTimeoutMillis: Number(
+                        config.get<string>('POSTGRES_IDLE_TIMEOUT_MS', '30000'),
+                    ),
+                    connectionTimeoutMillis: Number(
+                        config.get<string>(
+                            'POSTGRES_CONNECTION_TIMEOUT_MS',
+                            '10000',
+                        ),
+                    ),
+                },
+                logging:
+                    config.get<string>('TYPEORM_LOGGING', 'false') === 'true',
+            }),
+        }),
+        KafkaModule,
+        RecommendationRedisModule,
+        InteractionsModule,
+        CatalogModule,
+        RelationsModule,
+        MaintenanceModule,
+        RecommendationModule,
+        AdminRecommendationModule,
+        AnalyticsModule,
+        HealthModule,
+    ],
 })
 export class AppModule {}

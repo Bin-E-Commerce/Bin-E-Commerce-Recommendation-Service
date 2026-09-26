@@ -1,174 +1,187 @@
 // Repository này đọc preference và thực hiện persistence của guest-to-user merge; cache/session vẫn do application service quản lý.
 
-import { Injectable } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository } from "typeorm";
-import { RecommendationActorPreferenceEntity } from "../../../../database/profiles/entities/actor-preference.entity";
-import { RecommendationActorProfileEntity } from "../../../../database/profiles/entities/actor-profile.entity";
-import type { PreferenceValue } from "../../application/types/profile.types";
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { RecommendationActorPreferenceEntity } from '@/database/profiles/entities/actor-preference.entity';
+import { RecommendationActorProfileEntity } from '@/database/profiles/entities/actor-profile.entity';
+import type { PreferenceValue } from '@/modules/profiles/application/types/profile.types';
 
 // Adapter persistence cho các query profile phục vụ ranking và guest merge.
 @Injectable()
 export class ProfileQueryRepository {
-  constructor(
-    private readonly dataSource: DataSource,
-    @InjectRepository(RecommendationActorPreferenceEntity)
-    private readonly preferenceRepository: Repository<RecommendationActorPreferenceEntity>,
-  ) {}
+    constructor(
+        private readonly dataSource: DataSource,
+        @InjectRepository(RecommendationActorPreferenceEntity)
+        private readonly preferenceRepository: Repository<RecommendationActorPreferenceEntity>,
+    ) {}
 
-  // Lấy top preference theo actor/dimension để ranking không phụ thuộc TypeORM schema.
-  async findTop(
-    actorType: "USER" | "SESSION",
-    actorId: string,
-    dimension: string,
-    limit = 12,
-  ): Promise<PreferenceValue[]> {
-    // Lấy hai nhóm dương/âm độc lập để một return/refund mạnh không làm mất các preference dương.
-    // Application sẽ tiếp tục decay và chọn giới hạn cuối cùng cho ranking.
-    const createQuery = (condition: string) =>
-      this.preferenceRepository
-        .createQueryBuilder("preference")
-        .where("preference.actor_type = :actorType", { actorType })
-        .andWhere("preference.actor_id = :actorId", { actorId })
-        .andWhere("preference.dimension = :dimension", { dimension })
-        .andWhere(condition);
-    const safeLimit = Math.min(Math.max(limit, 1), 50);
-    const [positive, negative] = await Promise.all([
-      createQuery("preference.score > 0")
-        .orderBy("preference.score", "DESC")
-        .addOrderBy("preference.last_signal_at", "DESC")
-        .addOrderBy("preference.dimension_key", "ASC")
-        .take(safeLimit)
-        .getMany(),
-      createQuery("preference.score < 0")
-        .orderBy("ABS(preference.score)", "DESC")
-        .addOrderBy("preference.last_signal_at", "DESC")
-        .addOrderBy("preference.dimension_key", "ASC")
-        .take(safeLimit)
-        .getMany(),
-    ]);
-    return [...positive, ...negative] as unknown as PreferenceValue[];
-  }
+    // Lấy top preference theo actor/dimension để ranking không phụ thuộc TypeORM schema.
+    async findTop(
+        actorType: 'USER' | 'SESSION',
+        actorId: string,
+        dimension: string,
+        limit = 12,
+    ): Promise<PreferenceValue[]> {
+        // Lấy hai nhóm dương/âm độc lập để một return/refund mạnh không làm mất các preference dương.
+        // Application sẽ tiếp tục decay và chọn giới hạn cuối cùng cho ranking.
+        const createQuery = (condition: string) =>
+            this.preferenceRepository
+                .createQueryBuilder('preference')
+                .where('preference.actor_type = :actorType', { actorType })
+                .andWhere('preference.actor_id = :actorId', { actorId })
+                .andWhere('preference.dimension = :dimension', { dimension })
+                .andWhere(condition);
+        const safeLimit = Math.min(Math.max(limit, 1), 50);
+        const [positive, negative] = await Promise.all([
+            createQuery('preference.score > 0')
+                .orderBy('preference.score', 'DESC')
+                .addOrderBy('preference.last_signal_at', 'DESC')
+                .addOrderBy('preference.dimension_key', 'ASC')
+                .take(safeLimit)
+                .getMany(),
+            createQuery('preference.score < 0')
+                .orderBy('ABS(preference.score)', 'DESC')
+                .addOrderBy('preference.last_signal_at', 'DESC')
+                .addOrderBy('preference.dimension_key', 'ASC')
+                .take(safeLimit)
+                .getMany(),
+        ]);
+        return [...positive, ...negative] as unknown as PreferenceValue[];
+    }
 
-  // Merge toàn bộ preference guest trong transaction và trả false nếu session không tồn tại hoặc đã merge.
-  async mergeGuestSession(
-    userId: string,
-    sessionId: string,
-    context?: {
-      recentProductIds: string[];
-      recentCategoryIds: string[];
-      recentBrandIds: string[];
-      currentProductId: string | null;
-      currentCategoryId: string | null;
-      latestQuery: string | null;
-      cartProductIds: string[];
-      intentUpdatedAt: string;
-    },
-  ): Promise<boolean> {
-    return this.dataSource.transaction(async (manager) => {
-      // Advisory lock bảo vệ cặp user/session khỏi hai request login chạy đồng thời.
-      await manager.query(
-        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-        [`recommendation-session-merge:${sessionId}`],
-      );
-
-      const guest = await manager.findOne(RecommendationActorProfileEntity, {
-        where: { actorType: "SESSION", actorId: sessionId },
-      });
-      if (!guest || guest.mergedAt) return false;
-
-      const guestPreferences = await manager.find(
-        RecommendationActorPreferenceEntity,
-        {
-          where: { actorType: "SESSION", actorId: sessionId },
+    // Merge toàn bộ preference guest trong transaction và trả false nếu session không tồn tại hoặc đã merge.
+    async mergeGuestSession(
+        userId: string,
+        sessionId: string,
+        context?: {
+            recentProductIds: string[];
+            recentCategoryIds: string[];
+            recentBrandIds: string[];
+            currentProductId: string | null;
+            currentCategoryId: string | null;
+            latestQuery: string | null;
+            cartProductIds: string[];
+            intentUpdatedAt: string;
         },
-      );
-      const guestPreferenceKeys = new Set(
-        guestPreferences.map(
-          (preference) => `${preference.dimension}:${preference.dimensionKey}`,
-        ),
-      );
-      for (const preference of guestPreferences) {
-        await manager.query(
-          `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
+    ): Promise<boolean> {
+        return this.dataSource.transaction(async (manager) => {
+            // Advisory lock bảo vệ cặp user/session khỏi hai request login chạy đồng thời.
+            await manager.query(
+                `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+                [`recommendation-session-merge:${sessionId}`],
+            );
+
+            const guest = await manager.findOne(
+                RecommendationActorProfileEntity,
+                {
+                    where: { actorType: 'SESSION', actorId: sessionId },
+                },
+            );
+            if (!guest || guest.mergedAt) return false;
+
+            const guestPreferences = await manager.find(
+                RecommendationActorPreferenceEntity,
+                {
+                    where: { actorType: 'SESSION', actorId: sessionId },
+                },
+            );
+            const guestPreferenceKeys = new Set(
+                guestPreferences.map(
+                    (preference) =>
+                        `${preference.dimension}:${preference.dimensionKey}`,
+                ),
+            );
+            for (const preference of guestPreferences) {
+                await manager.query(
+                    `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
            VALUES ('USER', $1, $2, $3, $4, $5, $6)
            ON CONFLICT (actor_type, actor_id, dimension, dimension_key)
            DO UPDATE SET score = recommendation_actor_preferences.score + EXCLUDED.score,
                          interaction_count = recommendation_actor_preferences.interaction_count + EXCLUDED.interaction_count,
                          last_signal_at = GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at),
                          updated_at = now()`,
-          [
-            userId,
-            preference.dimension,
-            preference.dimensionKey,
-            preference.score,
-            preference.interactionCount,
-            preference.lastSignalAt,
-          ],
-        );
-      }
+                    [
+                        userId,
+                        preference.dimension,
+                        preference.dimensionKey,
+                        preference.score,
+                        preference.interactionCount,
+                        preference.lastSignalAt,
+                    ],
+                );
+            }
 
-      // Chá»‰ merge context chÆ°a cÃ³ trong durable profile Ä‘á»ƒ khÃ´ng cá»™ng Ä‘iá»ƒm hai láº§n cho cÃ¹ng chuá»—i event.
-      if (context) {
-        const contextSignals: Array<{ dimension: string; key: string }> = [
-          ...[
-            ...new Set([
-              ...context.recentProductIds,
-              ...context.cartProductIds,
-              ...(context.currentProductId ? [context.currentProductId] : []),
-            ]),
-          ].map((key) => ({ dimension: "PRODUCT", key })),
-          ...[
-            ...new Set([
-              ...context.recentCategoryIds,
-              ...(context.currentCategoryId ? [context.currentCategoryId] : []),
-            ]),
-          ].map((key) => ({ dimension: "CATEGORY", key })),
-          ...[...new Set(context.recentBrandIds)].map((key) => ({
-            dimension: "BRAND",
-            key,
-          })),
-          ...(context.latestQuery
-            ? [{ dimension: "QUERY", key: context.latestQuery }]
-            : []),
-        ];
-        const signalAt = new Date(context.intentUpdatedAt);
-        const safeSignalAt = Number.isNaN(signalAt.getTime())
-          ? new Date()
-          : signalAt;
-        for (const signal of contextSignals) {
-          if (
-            !signal.key ||
-            guestPreferenceKeys.has(`${signal.dimension}:${signal.key}`)
-          )
-            continue;
-          await manager.query(
-            `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
+            // Chá»‰ merge context chÆ°a cÃ³ trong durable profile Ä‘á»ƒ khÃ´ng cá»™ng Ä‘iá»ƒm hai láº§n cho cÃ¹ng chuá»—i event.
+            if (context) {
+                const contextSignals: Array<{
+                    dimension: string;
+                    key: string;
+                }> = [
+                    ...[
+                        ...new Set([
+                            ...context.recentProductIds,
+                            ...context.cartProductIds,
+                            ...(context.currentProductId
+                                ? [context.currentProductId]
+                                : []),
+                        ]),
+                    ].map((key) => ({ dimension: 'PRODUCT', key })),
+                    ...[
+                        ...new Set([
+                            ...context.recentCategoryIds,
+                            ...(context.currentCategoryId
+                                ? [context.currentCategoryId]
+                                : []),
+                        ]),
+                    ].map((key) => ({ dimension: 'CATEGORY', key })),
+                    ...[...new Set(context.recentBrandIds)].map((key) => ({
+                        dimension: 'BRAND',
+                        key,
+                    })),
+                    ...(context.latestQuery
+                        ? [{ dimension: 'QUERY', key: context.latestQuery }]
+                        : []),
+                ];
+                const signalAt = new Date(context.intentUpdatedAt);
+                const safeSignalAt = Number.isNaN(signalAt.getTime())
+                    ? new Date()
+                    : signalAt;
+                for (const signal of contextSignals) {
+                    if (
+                        !signal.key ||
+                        guestPreferenceKeys.has(
+                            `${signal.dimension}:${signal.key}`,
+                        )
+                    )
+                        continue;
+                    await manager.query(
+                        `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
              VALUES ('USER', $1, $2, $3, 0.5, 0, $4)
              ON CONFLICT (actor_type, actor_id, dimension, dimension_key)
              DO UPDATE SET last_signal_at = GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at),
                            updated_at = now()`,
-            [userId, signal.dimension, signal.key, safeSignalAt],
-          );
-        }
-      }
+                        [userId, signal.dimension, signal.key, safeSignalAt],
+                    );
+                }
+            }
 
-      await manager.query(
-        `INSERT INTO recommendation_actor_profiles (actor_type, actor_id, last_interaction_at, profile_version)
+            await manager.query(
+                `INSERT INTO recommendation_actor_profiles (actor_type, actor_id, last_interaction_at, profile_version)
          VALUES ('USER', $1, $2, 1)
          ON CONFLICT (actor_type, actor_id)
          DO UPDATE SET last_interaction_at = GREATEST(COALESCE(recommendation_actor_profiles.last_interaction_at, EXCLUDED.last_interaction_at), EXCLUDED.last_interaction_at),
                        profile_version = recommendation_actor_profiles.profile_version + 1,
                        updated_at = now()`,
-        [userId, guest.lastInteractionAt],
-      );
+                [userId, guest.lastInteractionAt],
+            );
 
-      await manager.update(
-        RecommendationActorProfileEntity,
-        { id: guest.id },
-        { mergedAt: new Date(), mergedUserId: userId },
-      );
-      return true;
-    });
-  }
+            await manager.update(
+                RecommendationActorProfileEntity,
+                { id: guest.id },
+                { mergedAt: new Date(), mergedUserId: userId },
+            );
+            return true;
+        });
+    }
 }

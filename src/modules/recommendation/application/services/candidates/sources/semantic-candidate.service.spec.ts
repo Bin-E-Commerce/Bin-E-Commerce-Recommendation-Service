@@ -1,103 +1,103 @@
 /// <reference types="jest" />
 
-import { SemanticCandidateService } from "./semantic-candidate.service";
+import { SemanticCandidateService } from '@/modules/recommendation/application/services/candidates/sources/semantic-candidate.service';
 
-describe("SemanticCandidateService", () => {
-  it("should build a weighted centroid from recent interaction signals", async () => {
-    // Arrange
-    const vector = {
-      getProductVector: jest.fn(async (productId: string) => ({
-        vector: productId === "product-a" ? [1, 0] : [0, 1],
-        contentHash: `hash-${productId}`,
-        modelVersion: "model-v1",
-      })),
-      searchSimilarProducts: jest.fn(async () => [
-        {
-          productId: "product-c",
-          similarityScore: 0.9,
-          modelVersion: "model-v1",
-          contentHash: "hash-product-c",
-        },
-      ]),
-    };
-    const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
-    const catalog = {
-      findSnapshots: jest.fn(async (productIds: string[]) =>
-        productIds.map((productId) => ({
-          productId,
-          contentHash: `hash-${productId}`,
-        })),
-      ),
-    };
-    const service = new SemanticCandidateService(
-      vector as never,
-      catalog as never,
-      rules as never,
-    );
+describe('SemanticCandidateService', () => {
+    it('should build a weighted centroid from recent interaction signals', async () => {
+        // Arrange
+        const vector = {
+            getProductVector: jest.fn(async (productId: string) => ({
+                vector: productId === 'product-a' ? [1, 0] : [0, 1],
+                contentHash: `hash-${productId}`,
+                modelVersion: 'model-v1',
+            })),
+            searchSimilarProducts: jest.fn(async () => [
+                {
+                    productId: 'product-c',
+                    similarityScore: 0.9,
+                    modelVersion: 'model-v1',
+                    contentHash: 'hash-product-c',
+                },
+            ]),
+        };
+        const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
+        const catalog = {
+            findSnapshots: jest.fn(async (productIds: string[]) =>
+                productIds.map((productId) => ({
+                    productId,
+                    contentHash: `hash-${productId}`,
+                })),
+            ),
+        };
+        const service = new SemanticCandidateService(
+            vector as never,
+            catalog as never,
+            rules as never,
+        );
 
-    // Act
-    const result = await service.findCandidates({
-      recentProductIds: ["product-a", "product-b"],
-      recentProductSignals: [
-        {
-          productId: "product-a",
-          weight: 4,
-          interactionType: "PRODUCT_ADDED_TO_CART",
-        },
-        {
-          productId: "product-b",
-          weight: 2,
-          interactionType: "PRODUCT_CLICKED",
-        },
-      ],
-      profileProductIds: [],
-      excludeProductIds: [],
-      limit: 10,
+        // Act
+        const result = await service.findCandidates({
+            recentProductIds: ['product-a', 'product-b'],
+            recentProductSignals: [
+                {
+                    productId: 'product-a',
+                    weight: 4,
+                    interactionType: 'PRODUCT_ADDED_TO_CART',
+                },
+                {
+                    productId: 'product-b',
+                    weight: 2,
+                    interactionType: 'PRODUCT_CLICKED',
+                },
+            ],
+            profileProductIds: [],
+            excludeProductIds: [],
+            limit: 10,
+        });
+
+        // Assert
+        expect(vector.searchSimilarProducts).toHaveBeenCalledWith(
+            [2 / 3, 1 / 3],
+            10,
+            [],
+        );
+        expect(result[0]).toMatchObject({
+            productId: 'product-c',
+            anchorProductId: 'product-a',
+        });
     });
 
-    // Assert
-    expect(vector.searchSimilarProducts).toHaveBeenCalledWith(
-      [2 / 3, 1 / 3],
-      10,
-      [],
-    );
-    expect(result[0]).toMatchObject({
-      productId: "product-c",
-      anchorProductId: "product-a",
+    it('should ignore negative or zero interaction weights', async () => {
+        // Arrange
+        const vector = {
+            getProductVector: jest.fn(async () => [1, 0]),
+            searchSimilarProducts: jest.fn(async () => []),
+        };
+        const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
+        const catalog = { findSnapshots: jest.fn(async () => []) };
+        const service = new SemanticCandidateService(
+            vector as never,
+            catalog as never,
+            rules as never,
+        );
+
+        // Act
+        await service.findCandidates({
+            recentProductIds: ['product-a'],
+            recentProductSignals: [
+                {
+                    productId: 'product-a',
+                    weight: -2,
+                    interactionType: 'PRODUCT_REMOVED_FROM_CART',
+                },
+            ],
+            profileProductIds: [],
+            excludeProductIds: [],
+            limit: 10,
+        });
+
+        // Assert
+        expect(vector.getProductVector).not.toHaveBeenCalled();
+        expect(vector.searchSimilarProducts).not.toHaveBeenCalled();
     });
-  });
-
-  it("should ignore negative or zero interaction weights", async () => {
-    // Arrange
-    const vector = {
-      getProductVector: jest.fn(async () => [1, 0]),
-      searchSimilarProducts: jest.fn(async () => []),
-    };
-    const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
-    const catalog = { findSnapshots: jest.fn(async () => []) };
-    const service = new SemanticCandidateService(
-      vector as never,
-      catalog as never,
-      rules as never,
-    );
-
-    // Act
-    await service.findCandidates({
-      recentProductIds: ["product-a"],
-      recentProductSignals: [
-        {
-          productId: "product-a",
-          weight: -2,
-          interactionType: "PRODUCT_REMOVED_FROM_CART",
-        },
-      ],
-      profileProductIds: [],
-      excludeProductIds: [],
-      limit: 10,
-    });
-
-    // Assert
-    expect(vector.getProductVector).not.toHaveBeenCalled();
-    expect(vector.searchSimilarProducts).not.toHaveBeenCalled();
-  });
 });

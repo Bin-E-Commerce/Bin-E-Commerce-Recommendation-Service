@@ -1,13 +1,13 @@
 // Migration này tạo read model cho Admin analytics, immutable request trace và versioned ranking policy.
 
-import { MigrationInterface, QueryRunner } from "typeorm";
+import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class CreateRecommendationAdminObservability1788030000000 implements MigrationInterface {
-  name = "CreateRecommendationAdminObservability1788030000000";
+    name = 'CreateRecommendationAdminObservability1788030000000';
 
-  // Tạo bảng độc lập trong Recommendation DB, không tạo foreign key sang User/Product/Order service.
-  async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
+    // Tạo bảng độc lập trong Recommendation DB, không tạo foreign key sang User/Product/Order service.
+    async up(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "recommendation_request_traces" (
         "request_id" varchar(128) NOT NULL,
         "actor_user_id" varchar(128),
@@ -27,10 +27,14 @@ export class CreateRecommendationAdminObservability1788030000000 implements Migr
         CONSTRAINT "PK_recommendation_request_traces" PRIMARY KEY ("request_id")
       )
     `);
-    await queryRunner.query(`CREATE INDEX IF NOT EXISTS "IDX_recommendation_request_traces_actor_created" ON "recommendation_request_traces" ("actor_user_id", "created_at")`);
-    await queryRunner.query(`CREATE INDEX IF NOT EXISTS "IDX_recommendation_request_traces_surface_created" ON "recommendation_request_traces" ("surface", "created_at")`);
+        await queryRunner.query(
+            `CREATE INDEX IF NOT EXISTS "IDX_recommendation_request_traces_actor_created" ON "recommendation_request_traces" ("actor_user_id", "created_at")`,
+        );
+        await queryRunner.query(
+            `CREATE INDEX IF NOT EXISTS "IDX_recommendation_request_traces_surface_created" ON "recommendation_request_traces" ("surface", "created_at")`,
+        );
 
-    await queryRunner.query(`
+        await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "recommendation_policies" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "version" varchar(128) NOT NULL,
@@ -43,17 +47,33 @@ export class CreateRecommendationAdminObservability1788030000000 implements Migr
         CONSTRAINT "UQ_recommendation_policies_version" UNIQUE ("version")
       )
     `);
-    await queryRunner.query(`CREATE INDEX IF NOT EXISTS "IDX_recommendation_policies_status_created" ON "recommendation_policies" ("status", "created_at")`);
-    await queryRunner.query(`CREATE UNIQUE INDEX IF NOT EXISTS "UQ_recommendation_policies_single_active" ON "recommendation_policies" ("status") WHERE "status" = 'ACTIVE'`);
-  }
+        await queryRunner.query(
+            `CREATE INDEX IF NOT EXISTS "IDX_recommendation_policies_status_created" ON "recommendation_policies" ("status", "created_at")`,
+        );
+        await queryRunner.query(
+            `CREATE UNIQUE INDEX IF NOT EXISTS "UQ_recommendation_policies_single_active" ON "recommendation_policies" ("status") WHERE "status" = 'ACTIVE'`,
+        );
+    }
 
-  // Xóa đúng các bảng do migration này sở hữu, không đụng interaction/catalog read model.
-  async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "UQ_recommendation_policies_single_active"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_policies_status_created"`);
-    await queryRunner.query(`DROP TABLE IF EXISTS "recommendation_policies"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_request_traces_surface_created"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_recommendation_request_traces_actor_created"`);
-    await queryRunner.query(`DROP TABLE IF EXISTS "recommendation_request_traces"`);
-  }
+    // Xóa đúng các bảng do migration này sở hữu, không đụng interaction/catalog read model.
+    async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "UQ_recommendation_policies_single_active"`,
+        );
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_policies_status_created"`,
+        );
+        await queryRunner.query(
+            `DROP TABLE IF EXISTS "recommendation_policies"`,
+        );
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_request_traces_surface_created"`,
+        );
+        await queryRunner.query(
+            `DROP INDEX IF EXISTS "IDX_recommendation_request_traces_actor_created"`,
+        );
+        await queryRunner.query(
+            `DROP TABLE IF EXISTS "recommendation_request_traces"`,
+        );
+    }
 }

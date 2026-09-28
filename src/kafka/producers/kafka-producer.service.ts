@@ -13,6 +13,8 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
     private readonly producer: Producer;
     private connected = false;
     private connecting?: Promise<void>;
+    private reconnectTimer?: NodeJS.Timeout;
+    private readonly reconnectDelayMs: number;
     private stopping = false;
 
     // Khởi tạo producer theo môi trường; broker lỗi không làm mất khả năng health-check HTTP của service.
@@ -31,6 +33,14 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
             brokers,
             retry: { retries: 3 },
         }).producer();
+        const configuredReconnectDelay = Number(
+            this.config.get<string>('KAFKA_RECONNECT_DELAY_MS', '5000'),
+        );
+        this.reconnectDelayMs =
+            Number.isInteger(configuredReconnectDelay) &&
+            configuredReconnectDelay >= 1000
+                ? configuredReconnectDelay
+                : 5000;
     }
 
     // Kết nối nền để service vẫn khởi động và log được trạng thái Kafka trong môi trường local thiếu broker.
@@ -42,12 +52,14 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
             this.logger.warn(
                 `Kafka producer is unavailable: ${this.getErrorMessage(error)}`,
             );
+            this.scheduleReconnect();
         }
     }
 
     // Đóng producer khi Nest shutdown để flush connection sạch và không giữ process sống.
     async onModuleDestroy(): Promise<void> {
         this.stopping = true;
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         if (!this.connected) return;
         await this.producer.disconnect().catch(() => undefined);
         this.connected = false;
@@ -116,6 +128,7 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
             })
             .catch((error) => {
                 this.connected = false;
+                this.scheduleReconnect();
                 throw error;
             })
             .finally(() => {
@@ -123,6 +136,19 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
             });
 
         return this.connecting;
+    }
+
+    // Kafka có thể khởi động chậm hơn Recommendation Service; retry nền giúp readiness tự hồi phục thay vì giữ producer down vĩnh viễn.
+    private scheduleReconnect(): void {
+        if (this.stopping || this.connected || this.reconnectTimer) return;
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = undefined;
+            void this.ensureConnected().catch((error) => {
+                this.logger.warn(
+                    `Kafka producer reconnect failed: ${this.getErrorMessage(error)}`,
+                );
+            });
+        }, this.reconnectDelayMs);
     }
 
     // Trả trạng thái kết nối hiện tại để readiness không cần gửi thử một event nghiệp vụ.

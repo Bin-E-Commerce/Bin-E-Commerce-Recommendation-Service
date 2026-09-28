@@ -49,6 +49,7 @@ export class RecommendationMlRankingService {
     private readonly baseUrl: string;
     private readonly token: string;
     private readonly timeoutMs: number;
+    private readonly logScores: boolean;
 
     constructor(
         private readonly config: ConfigService,
@@ -66,6 +67,8 @@ export class RecommendationMlRankingService {
             Number.isInteger(configuredTimeout) && configuredTimeout > 0
                 ? Math.min(configuredTimeout, 1000)
                 : 150;
+        this.logScores =
+            config.get<string>('ML_RANKING_LOG_SCORES', 'false') === 'true';
     }
 
     // Đọc trạng thái model qua boundary nội bộ để Admin phân biệt policy đã bật với AI thật sự đang phục vụ.
@@ -215,13 +218,19 @@ export class RecommendationMlRankingService {
                     : null;
             // AI Service có thể trả deterministic fallback khi chưa load LightGBM;
             // fallback này không được tính là AI ranking hoặc blend vào ranking thật.
-            if (modelVersion?.startsWith('ranking-fallback')) {
+            if (!modelVersion || modelVersion.startsWith('ranking-fallback')) {
                 return {
                     scores: new Map(),
                     features: featureByProductId,
                     modelVersion: null,
                 };
             }
+            this.logPredictionScores(
+                input.requestId,
+                modelVersion,
+                candidates,
+                scores,
+            );
             return {
                 scores,
                 features: featureByProductId,
@@ -244,6 +253,24 @@ export class RecommendationMlRankingService {
     // Giữ thứ tự feature cố định giữa Recommendation và AI để model artifact không bị lệch cột khi refactor code.
     private toFeatureRow(features: RankingFeatureVector): number[] {
         return FEATURE_ORDER.map((key) => this.clamp(features[key]));
+    }
+
+    // Log từng score ML hợp lệ ở local để đối chiếu candidate; chỉ log sau khi batch đã đủ item và model không phải fallback.
+    private logPredictionScores(
+        requestId: string,
+        modelVersion: string,
+        candidates: RecommendationCandidate[],
+        scores: ReadonlyMap<string, number>,
+    ): void {
+        if (!this.logScores) return;
+        for (const candidate of candidates) {
+            const productId = candidate.product.productId;
+            const score = scores.get(productId);
+            if (score === undefined) continue;
+            this.logger.log(
+                `[ML_RANKING_SCORE] requestId=${requestId} modelVersion=${modelVersion} itemId=${productId} productName=${JSON.stringify(candidate.product.name)} mlScore=${score.toFixed(6)}`,
+            );
+        }
     }
 
     // Cache feature vector trong cùng request để ranker không phải tính lại toàn bộ preference/semantic relation.

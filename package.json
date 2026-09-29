@@ -6,6 +6,7 @@
         "build": "nest build && tsc-alias -p tsconfig.build.json",
         "start": "node --max-old-space-size=128 dist/services/recommendation-service/src/main.js",
         "dev": "nest start --watch",
+        "ranking-simulate": "node dist/services/recommendation-service/src/scripts/generate-ranking-synthetic-dataset.js",
         "lint": "eslint src --ext .ts",
         "type-check": "tsc --noEmit",
         "test": "jest --passWithNoTests"

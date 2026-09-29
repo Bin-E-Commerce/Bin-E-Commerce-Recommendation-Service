@@ -30,6 +30,7 @@ export class RankingFeatureService {
         brands: PreferenceValue[],
         context: SessionContext | null,
         lookup?: RankingPreferenceLookup,
+        referenceTime: Date = new Date(),
     ): RankingFeatureVector {
         const preferenceLookup =
             lookup ?? this.createPreferenceLookup(products, categories, brands);
@@ -53,10 +54,18 @@ export class RankingFeatureService {
                 this.normalizeRelation(item.rawScore, item.relationType),
             )
             .reduce((max, value) => Math.max(max, value), 0);
-        const profileProduct = this.positivePreferenceScore(productPreference);
-        const profileCategory =
-            this.positivePreferenceScore(categoryPreference);
-        const profileBrand = this.positivePreferenceScore(brandPreference);
+        const profileProduct = this.positivePreferenceScore(
+            productPreference,
+            referenceTime,
+        );
+        const profileCategory = this.positivePreferenceScore(
+            categoryPreference,
+            referenceTime,
+        );
+        const profileBrand = this.positivePreferenceScore(
+            brandPreference,
+            referenceTime,
+        );
         const profileAffinity = this.clamp(
             profileProduct + profileCategory * 0.6 + profileBrand * 0.4,
         );
@@ -70,13 +79,15 @@ export class RankingFeatureService {
                 ]),
             ),
         );
-        const freshness = this.freshnessScore(candidate.product.createdAt);
+        const freshness = this.freshnessScore(
+            candidate.product.createdAt,
+            referenceTime,
+        );
         const quality = this.qualityScore(candidate);
         const exploration = this.explorationScore(candidate, profileAffinity);
         const negativePenalty = this.negativePenalty(
-            productPreference,
-            categoryPreference,
-            brandPreference,
+            [productPreference, categoryPreference, brandPreference],
+            referenceTime,
         );
 
         return {
@@ -95,28 +106,37 @@ export class RankingFeatureService {
     // Tính preference đã decay để tín hiệu mới có ảnh hưởng lớn hơn nhưng không vượt quá bound của ranker.
     private positivePreferenceScore(
         value: PreferenceValue | undefined,
+        referenceTime: Date,
     ): number {
         if (!value) return 0;
-        const decayed = this.decayedPreferenceScore(value);
+        const decayed = this.decayedPreferenceScore(value, referenceTime);
         return this.clamp(Math.max(0, decayed) / 8);
     }
 
     // Giữ negative preference thành penalty riêng để tín hiệu trả hàng không bị trộn với positive affinity.
     private negativePenalty(
-        ...values: Array<PreferenceValue | undefined>
+        values: Array<PreferenceValue | undefined>,
+        referenceTime: Date,
     ): number {
         const negative = values.reduce((sum, value) => {
             if (!value || value.score >= 0) return sum;
-            return sum + Math.abs(this.decayedPreferenceScore(value)) / 8;
+            return (
+                sum +
+                Math.abs(this.decayedPreferenceScore(value, referenceTime)) / 8
+            );
         }, 0);
         return Math.min(0.15, this.clamp(negative) * 0.15);
     }
 
     // Dùng chung decay cho positive và negative signal để return/refund cũ không phạt user vĩnh viễn.
-    private decayedPreferenceScore(value: PreferenceValue): number {
+    private decayedPreferenceScore(
+        value: PreferenceValue,
+        referenceTime: Date,
+    ): number {
         const ageDays = Math.max(
             0,
-            (Date.now() - value.lastSignalAt.getTime()) / 86_400_000,
+            (referenceTime.getTime() - value.lastSignalAt.getTime()) /
+                86_400_000,
         );
         return (
             value.score *
@@ -179,10 +199,10 @@ export class RankingFeatureService {
     }
 
     // Freshness dùng bucket thời gian cố định để score ổn định và không bị sản phẩm mới áp đảo lâu dài.
-    private freshnessScore(createdAt: Date): number {
+    private freshnessScore(createdAt: Date, referenceTime: Date): number {
         const ageDays = Math.max(
             0,
-            (Date.now() - createdAt.getTime()) / 86_400_000,
+            (referenceTime.getTime() - createdAt.getTime()) / 86_400_000,
         );
         if (ageDays <= 1) return 1;
         if (ageDays <= 7) return 0.8;

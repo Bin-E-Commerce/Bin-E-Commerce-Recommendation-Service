@@ -13,6 +13,7 @@ import { CandidateGenerationService } from '@/modules/recommendation/application
 import { RankingFeatureService } from '@/modules/recommendation/application/services/ranking/features/ranking-feature.service';
 import { RecommendationTrackingTokenService } from '@/modules/recommendation/application/services/tracking/attribution/recommendation-tracking-token.service';
 import { RecommendationMlRankingService } from '@/modules/recommendation/application/services/ranking/ml/recommendation-ml-ranking.service';
+import { RankingSimulationService } from '@/modules/recommendation/application/services/offline/ranking-simulation.service';
 
 @Module({
     imports: [CatalogModule, ProfilesModule, RelationsModule],
@@ -26,6 +27,7 @@ import { RecommendationMlRankingService } from '@/modules/recommendation/applica
         RankingFeatureService,
         RecommendationTrackingTokenService,
         RecommendationMlRankingService,
+        RankingSimulationService,
     ],
     exports: [
         RecommendationTrackingTokenService,

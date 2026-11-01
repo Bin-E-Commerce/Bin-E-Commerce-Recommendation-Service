@@ -121,7 +121,11 @@ export function validateCatalogEvent(
         requireString(data.name, 'data.name', 500);
         requireString(data.slug, 'data.slug', 620);
     }
-    requireString(data.sellerShopId, 'data.sellerShopId', 128);
+    // Contract yêu cầu key sellerShopId nhưng cho phép null khi chưa có shop.
+    // Undefined hoặc chuỗi rỗng vẫn bị requireString từ chối.
+    if (data.sellerShopId !== null) {
+        requireString(data.sellerShopId, 'data.sellerShopId', 128);
+    }
     if (!catalogEventNames.has(String(event.eventName))) {
         throw new InvalidKafkaEventError('catalog eventName is not supported');
     }

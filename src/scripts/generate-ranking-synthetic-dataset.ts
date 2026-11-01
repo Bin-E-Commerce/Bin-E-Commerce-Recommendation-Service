@@ -13,14 +13,12 @@ import type { RankingSyntheticDataset } from '@/modules/recommendation/applicati
 
 interface CatalogRow extends QueryResultRow {
     product_id: string;
-    origin_type: 'INTERNAL' | 'EXTERNAL';
     name: string;
     slug: string;
     image_url: string | null;
     category_id: string | null;
     brand_id: string | null;
     seller_shop_id: string | null;
-    external_shop_id: string | null;
     min_price: string;
     max_price: string;
     rating_avg: string | null;
@@ -138,8 +136,8 @@ async function loadCatalog(
     });
     try {
         const result = await pool.query<CatalogRow>(
-            `SELECT product_id, origin_type, name, slug, image_url,
-                    category_id, brand_id, seller_shop_id, external_shop_id,
+            `SELECT product_id, name, slug, image_url,
+                    category_id, brand_id, seller_shop_id,
                     min_price, max_price, rating_avg, review_count, total_sold,
                     status, is_in_stock, created_at, updated_at,
                     catalog_version, short_description, description, brand_name,
@@ -165,14 +163,12 @@ function toCatalogProduct(row: CatalogRow): RecommendationCatalogProduct {
             : (row.semantic_attributes ?? []);
     return {
         productId: row.product_id,
-        originType: row.origin_type,
         name: row.name,
         slug: row.slug,
         imageUrl: row.image_url,
         categoryId: row.category_id,
         brandId: row.brand_id,
         sellerShopId: row.seller_shop_id,
-        externalShopId: row.external_shop_id,
         minPrice: row.min_price,
         maxPrice: row.max_price,
         ratingAvg: row.rating_avg,

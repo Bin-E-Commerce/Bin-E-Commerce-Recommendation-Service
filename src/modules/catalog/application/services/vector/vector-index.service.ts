@@ -249,11 +249,9 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         contentHash: string;
         modelVersion: string;
         catalogRevision: string;
-        originType: string;
         categoryId: string | null;
         brandId: string | null;
         sellerShopId: string | null;
-        externalShopId: string | null;
         minPrice: string;
         maxPrice: string;
         status: string;

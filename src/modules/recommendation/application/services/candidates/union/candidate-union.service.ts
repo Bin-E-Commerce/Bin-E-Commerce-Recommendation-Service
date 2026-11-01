@@ -61,14 +61,8 @@ export class CandidateUnion {
     // Lớp bảo vệ cuối cùng giữ invariant product detail không trả sản phẩm cùng shop dù source adapter có lỗi hoặc dữ liệu cũ.
     private isExcludedByShop(product: RecommendationCatalogProduct): boolean {
         return Boolean(
-            (this.shopExclusions.excludeSellerShopId &&
-                product.originType === 'INTERNAL' &&
-                product.sellerShopId ===
-                    this.shopExclusions.excludeSellerShopId) ||
-            (this.shopExclusions.excludeExternalShopId &&
-                product.originType === 'EXTERNAL' &&
-                product.externalShopId ===
-                    this.shopExclusions.excludeExternalShopId),
+            this.shopExclusions.excludeSellerShopId &&
+            product.sellerShopId === this.shopExclusions.excludeSellerShopId,
         );
     }
 

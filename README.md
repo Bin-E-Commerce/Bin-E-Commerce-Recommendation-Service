@@ -245,25 +245,25 @@ A successful interaction response is HTTP 202. It means the event was accepted f
 
 ```json
 {
-  "requestId": "req_01J...",
-  "strategy": "SESSION_BASED",
-  "profileState": "GUEST",
-  "items": [
-    {
-      "product": {
-        "id": "product-123",
-        "name": "Example product",
-        "displayPrice": "299000"
-      },
-      "recommendationItemId": "rec_01J...",
-      "rank": 1,
-      "score": 0.8421,
-      "source": "SEMANTIC_SIMILARITY",
-      "reasons": ["similar_to_recent_view"]
-    }
-  ],
-  "rankingMode": "HYBRID",
-  "rankingModelVersion": null
+    "requestId": "req_01J...",
+    "strategy": "SESSION_BASED",
+    "profileState": "GUEST",
+    "items": [
+        {
+            "product": {
+                "id": "product-123",
+                "name": "Example product",
+                "displayPrice": "299000"
+            },
+            "recommendationItemId": "rec_01J...",
+            "rank": 1,
+            "score": 0.8421,
+            "source": "SEMANTIC_SIMILARITY",
+            "reasons": ["similar_to_recent_view"]
+        }
+    ],
+    "rankingMode": "HYBRID",
+    "rankingModelVersion": null
 }
 ```
 
@@ -554,7 +554,7 @@ After scoring, the service applies deterministic diversity limits across:
 
 - category;
 - brand;
-- seller or external shop.
+- seller shop.
 
 The canonical result set is ranked with a fixed window and then paginated. This prevents changing pageSize from unexpectedly changing the order of the first items.
 
@@ -622,8 +622,8 @@ the request uses the Standard score and response metadata is:
 
 ```json
 {
-  "rankingMode": "HYBRID",
-  "rankingModelVersion": null
+    "rankingMode": "HYBRID",
+    "rankingModelVersion": null
 }
 ```
 
@@ -661,8 +661,7 @@ Serving reads a local catalog projection containing:
 
 - product identity and slug;
 - name and normalized descriptions;
-- category and brand;
-- seller or external-shop reference;
+- category, brand, and seller shop;
 - price range;
 - rating, review count, and total sold;
 - status and in-stock state;
@@ -746,8 +745,8 @@ Recommendation items carry a recommendation item ID and safe source/reason infor
 - item;
 - rank;
 - surface;
-  - strategy;
-  - ranking mode;
+    - strategy;
+    - ranking mode;
 - policy/model version.
 
 The tracking secret is required in production and must not be exposed to the browser.
@@ -928,19 +927,19 @@ Analytics ranges default to the most recent 30 days and are limited to 31 days.
 
 ```json
 {
-  "hybridWeights": {
-    "profileAffinity": 0.25,
-    "sessionContext": 0.18,
-    "semanticSimilarity": 0.15,
-    "coBehavior": 0.1,
-    "popularity": 0.12,
-    "freshness": 0.08,
-    "quality": 0.08,
-    "exploration": 0.04
-  },
-  "mlEnabled": true,
-  "mlBlend": 0.3,
-  "reason": "Enable AI ranking for all requests"
+    "hybridWeights": {
+        "profileAffinity": 0.25,
+        "sessionContext": 0.18,
+        "semanticSimilarity": 0.15,
+        "coBehavior": 0.1,
+        "popularity": 0.12,
+        "freshness": 0.08,
+        "quality": 0.08,
+        "exploration": 0.04
+    },
+    "mlEnabled": true,
+    "mlBlend": 0.3,
+    "reason": "Enable AI ranking for all requests"
 }
 ```
 

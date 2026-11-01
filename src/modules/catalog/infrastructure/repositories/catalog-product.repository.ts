@@ -51,15 +51,15 @@ export class CatalogProductRepository {
         // nếu không, mỗi lần bootstrap sẽ reset READY về PENDING và tạo embedding thừa.
         const rows = (await manager.query(
             `INSERT INTO recommendation_catalog_products
-        (product_id, origin_type, name, slug, image_url, category_id, brand_id, seller_shop_id, external_shop_id,
+        (product_id, name, slug, image_url, category_id, brand_id, seller_shop_id,
          min_price, max_price, rating_avg, review_count, total_sold, status, is_in_stock, created_at, updated_at,
          catalog_version, short_description, description, brand_name, category_path, semantic_attributes, content_hash,
          embedding_status, embedding_model_version, embedding_dimensions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
        ON CONFLICT (product_id) DO UPDATE SET
-         origin_type = EXCLUDED.origin_type, name = EXCLUDED.name, slug = EXCLUDED.slug, image_url = EXCLUDED.image_url,
+         name = EXCLUDED.name, slug = EXCLUDED.slug, image_url = EXCLUDED.image_url,
          category_id = EXCLUDED.category_id, brand_id = EXCLUDED.brand_id, seller_shop_id = EXCLUDED.seller_shop_id,
-         external_shop_id = EXCLUDED.external_shop_id, min_price = EXCLUDED.min_price, max_price = EXCLUDED.max_price,
+         min_price = EXCLUDED.min_price, max_price = EXCLUDED.max_price,
          rating_avg = EXCLUDED.rating_avg, review_count = EXCLUDED.review_count, total_sold = EXCLUDED.total_sold,
          status = EXCLUDED.status, is_in_stock = EXCLUDED.is_in_stock, created_at = EXCLUDED.created_at,
          updated_at = EXCLUDED.updated_at, catalog_version = EXCLUDED.catalog_version,
@@ -85,14 +85,12 @@ export class CatalogProductRepository {
        RETURNING product_id`,
             [
                 snapshot.productId,
-                snapshot.originType,
                 snapshot.name,
                 snapshot.slug,
                 snapshot.imageUrl ?? null,
                 snapshot.categoryId ?? null,
                 snapshot.brandId ?? null,
                 snapshot.sellerShopId ?? null,
-                snapshot.externalShopId ?? null,
                 snapshot.minPrice ?? '0',
                 snapshot.maxPrice ?? snapshot.minPrice ?? '0',
                 snapshot.ratingAvg ?? null,
@@ -369,14 +367,8 @@ export class CatalogProductRepository {
         }
         if (exclusions.excludeSellerShopId) {
             query.andWhere(
-                "(product.origin_type != 'INTERNAL' OR product.seller_shop_id IS NULL OR product.seller_shop_id != :excludeSellerShopId)",
+                '(product.seller_shop_id IS NULL OR product.seller_shop_id != :excludeSellerShopId)',
                 { excludeSellerShopId: exclusions.excludeSellerShopId },
-            );
-        }
-        if (exclusions.excludeExternalShopId) {
-            query.andWhere(
-                "(product.origin_type != 'EXTERNAL' OR product.external_shop_id IS NULL OR product.external_shop_id != :excludeExternalShopId)",
-                { excludeExternalShopId: exclusions.excludeExternalShopId },
             );
         }
     }
@@ -387,12 +379,8 @@ export class CatalogProductRepository {
         exclusions: CatalogProductExclusionOptions,
     ): boolean {
         return Boolean(
-            (exclusions.excludeSellerShopId &&
-                product.originType === 'INTERNAL' &&
-                product.sellerShopId === exclusions.excludeSellerShopId) ||
-            (exclusions.excludeExternalShopId &&
-                product.originType === 'EXTERNAL' &&
-                product.externalShopId === exclusions.excludeExternalShopId),
+            exclusions.excludeSellerShopId &&
+            product.sellerShopId === exclusions.excludeSellerShopId,
         );
     }
 

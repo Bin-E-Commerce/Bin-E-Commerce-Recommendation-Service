@@ -54,14 +54,12 @@ describe('RecommendationQueryService', () => {
 
         const product: RecommendationCatalogProduct = {
             productId: 'product-1',
-            originType: 'INTERNAL',
             name: 'Product 1',
             slug: 'product-1',
             imageUrl: null,
             categoryId: 'category-1',
             brandId: 'brand-1',
             sellerShopId: 'shop-1',
-            externalShopId: null,
             minPrice: '100',
             maxPrice: '100',
             ratingAvg: '5',
@@ -184,7 +182,7 @@ describe('RecommendationQueryService', () => {
         const input = { surface: 'home' as const, page: 1, pageSize: 24 };
 
         // Act
-        const result = await target.getRecommendations(input, 'user-1', null);
+        await target.getRecommendations(input, 'user-1', null);
 
         // Assert
         expect(mockMlRanking.predict).not.toHaveBeenCalled();
@@ -226,7 +224,7 @@ describe('RecommendationQueryService', () => {
     it('should exclude the current product and its shop on product detail', async () => {
         // Arrange
         mockCatalog.findSnapshots.mockResolvedValue([
-            { sellerShopId: 'shop-1', externalShopId: null } as never,
+            { sellerShopId: 'shop-1' } as never,
         ]);
         const input = {
             surface: 'product_detail' as const,

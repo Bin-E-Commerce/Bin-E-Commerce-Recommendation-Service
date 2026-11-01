@@ -10,18 +10,16 @@ import type { RankingSyntheticOptions } from '@/modules/recommendation/applicati
 describe('RankingSimulationService', () => {
     let target: RankingSimulationService;
 
-    // Tạo catalog fixture đủ category/brand/quality để simulator chạy qua toàn bộ feature builder production.
+    // Tạo catalog sản phẩm seller đủ category/brand/quality cho toàn bộ feature builder.
     const createCatalog = (count = 12): RecommendationCatalogProduct[] =>
         Array.from({ length: count }, (_, index) => ({
             productId: `product-${String(index + 1).padStart(3, '0')}`,
-            originType: 'EXTERNAL',
             name: `Product ${index + 1}`,
             slug: `product-${index + 1}`,
             imageUrl: null,
             categoryId: `category-${index % 3}`,
             brandId: `brand-${index % 4}`,
-            sellerShopId: null,
-            externalShopId: `external-shop-${index % 2}`,
+            sellerShopId: `seller-shop-${index % 2}`,
             minPrice: String(100_000 + index * 25_000),
             maxPrice: String(120_000 + index * 25_000),
             ratingAvg: String(3.5 + (index % 4) * 0.3),

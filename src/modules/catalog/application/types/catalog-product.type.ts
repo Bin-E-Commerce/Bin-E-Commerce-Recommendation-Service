@@ -2,14 +2,12 @@
 
 export interface RecommendationCatalogProduct {
     productId: string;
-    originType: 'INTERNAL' | 'EXTERNAL';
     name: string;
     slug: string;
     imageUrl: string | null;
     categoryId: string | null;
     brandId: string | null;
     sellerShopId: string | null;
-    externalShopId: string | null;
     minPrice: string;
     maxPrice: string;
     ratingAvg: string | null;
@@ -41,7 +39,6 @@ export interface RecommendationCatalogProduct {
 export interface CatalogProductExclusionOptions {
     excludeProductIds?: string[];
     excludeSellerShopId?: string;
-    excludeExternalShopId?: string;
 }
 
 // Query options của category/brand kế thừa exclusion chung, tránh lặp field giữa application và persistence.
@@ -53,7 +50,6 @@ export interface CatalogProductListOptions extends CatalogProductExclusionOption
 
 export interface CatalogBootstrapItem {
     id: string;
-    originType?: 'INTERNAL' | 'EXTERNAL';
     name: string;
     slug: string;
     minPrice: string;
@@ -64,7 +60,6 @@ export interface CatalogBootstrapItem {
     totalSold?: number;
     categoryId?: string | null;
     sellerShopId?: string | null;
-    externalShop?: { id: string } | null;
     brand?: { id: string } | null;
     images?: Array<{ imageUrl: string; sortOrder?: number }>;
     imageUrl?: string | null;

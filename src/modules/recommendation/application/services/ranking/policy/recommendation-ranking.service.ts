@@ -263,8 +263,7 @@ export class RecommendationRankingService {
     ): boolean {
         const category = product.categoryId ?? 'unknown';
         const brand = product.brandId ?? 'unknown';
-        const shop =
-            product.sellerShopId ?? product.externalShopId ?? 'unknown';
+        const shop = product.sellerShopId ?? 'unknown';
         return (
             (counts.category.get(category) ?? 0) < limits.category &&
             (counts.brand.get(brand) ?? 0) < limits.brand &&
@@ -284,7 +283,7 @@ export class RecommendationRankingService {
         const keys = {
             category: product.categoryId ?? 'unknown',
             brand: product.brandId ?? 'unknown',
-            shop: product.sellerShopId ?? product.externalShopId ?? 'unknown',
+            shop: product.sellerShopId ?? 'unknown',
         };
         for (const key of ['category', 'brand', 'shop'] as const) {
             const map = counts[key];

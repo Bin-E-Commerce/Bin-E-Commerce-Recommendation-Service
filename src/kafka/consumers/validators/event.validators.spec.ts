@@ -17,7 +17,6 @@ describe('event validators', () => {
             occurredAt: '2026-09-06T10:00:00.000Z',
             data: {
                 productId: 'product-1',
-                originType: 'INTERNAL',
                 name: 'Product',
                 slug: 'product',
                 status: 'ACTIVE',
@@ -47,7 +46,6 @@ describe('event validators', () => {
             occurredAt: '2026-09-06T10:00:00.000Z',
             data: {
                 productId: 'product-1',
-                originType: 'INTERNAL',
                 name: 'Product',
                 slug: 'product',
                 status: 'ACTIVE',

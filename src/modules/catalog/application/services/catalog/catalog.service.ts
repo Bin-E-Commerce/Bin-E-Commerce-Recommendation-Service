@@ -274,14 +274,12 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
         await this.upsert(
             {
                 productId: data.productId,
-                originType: data.originType,
                 name: data.name,
                 slug: data.slug,
                 imageUrl: data.imageUrl,
                 categoryId: data.categoryId,
                 brandId: data.brandId,
                 sellerShopId: data.sellerShopId,
-                externalShopId: data.externalShopId,
                 minPrice: data.minPrice,
                 maxPrice: data.maxPrice,
                 ratingAvg: data.ratingAvg,
@@ -513,14 +511,12 @@ export class CatalogService implements OnModuleInit, OnModuleDestroy {
         });
         return {
             productId: item.id,
-            originType: item.originType ?? 'EXTERNAL',
             name: item.name,
             slug: item.slug,
             imageUrl: image,
             categoryId: item.categoryId ?? null,
             brandId: item.brand?.id ?? null,
             sellerShopId: item.sellerShopId ?? null,
-            externalShopId: item.externalShop?.id ?? null,
             minPrice: item.minPrice ?? '0',
             maxPrice: item.maxPrice ?? item.minPrice ?? '0',
             ratingAvg: item.ratingAvg ?? null,

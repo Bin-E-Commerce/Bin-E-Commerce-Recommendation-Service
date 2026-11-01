@@ -6,7 +6,6 @@ import { Column, Entity, Index, PrimaryColumn } from 'typeorm';
 @Index('idx_recommendation_catalog_status_stock', ['status', 'isInStock'])
 @Index('idx_recommendation_catalog_category', ['categoryId', 'status'])
 @Index('idx_recommendation_catalog_brand', ['brandId', 'status'])
-@Index('idx_recommendation_catalog_origin', ['originType', 'status'])
 @Index('idx_recommendation_catalog_created', ['createdAt'])
 @Index('idx_recommendation_catalog_updated', ['updatedAt'])
 @Index('idx_recommendation_catalog_embedding_status', ['embeddingStatus'])
@@ -14,10 +13,6 @@ export class RecommendationCatalogProductEntity {
     // Product ID từ Product Service; dùng làm khóa chính của catalog read model và không tạo foreign key cross-service.
     @PrimaryColumn({ name: 'product_id', type: 'varchar', length: 128 })
     productId!: string;
-
-    // Phân biệt sản phẩm nội bộ có thể checkout với sản phẩm external chỉ phục vụ tham khảo/gợi ý.
-    @Column({ name: 'origin_type', type: 'varchar', length: 16 })
-    originType!: 'INTERNAL' | 'EXTERNAL';
 
     // Tên hiển thị trên recommendation card; snapshot tại thời điểm catalog event được xử lý.
     @Column({ type: 'varchar', length: 500 })
@@ -52,15 +47,6 @@ export class RecommendationCatalogProductEntity {
         nullable: true,
     })
     sellerShopId!: string | null;
-
-    // Shop external nguồn sản phẩm tham khảo; nullable với sản phẩm nội bộ.
-    @Column({
-        name: 'external_shop_id',
-        type: 'varchar',
-        length: 128,
-        nullable: true,
-    })
-    externalShopId!: string | null;
 
     // Mức giá thấp nhất của các variant, dùng hiển thị và làm tín hiệu price range trong tương lai.
     @Column({ name: 'min_price', type: 'numeric', precision: 14, scale: 2 })

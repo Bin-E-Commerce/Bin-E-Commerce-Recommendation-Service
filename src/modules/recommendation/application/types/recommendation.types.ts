@@ -7,11 +7,9 @@ export type RecommendationStrategy =
 
 export interface RecommendationProductResponse {
     id: string;
-    originType: 'INTERNAL' | 'EXTERNAL';
     name: string;
     slug: string;
     sellerShopId: string | null;
-    externalShopId: string | null;
     categoryId: string | null;
     minPrice: string;
     maxPrice: string;
@@ -26,7 +24,6 @@ export interface RecommendationProductResponse {
         sortOrder: number;
         isThumbnail: boolean;
     }>;
-    externalShop: null;
     brand: null;
 }
 

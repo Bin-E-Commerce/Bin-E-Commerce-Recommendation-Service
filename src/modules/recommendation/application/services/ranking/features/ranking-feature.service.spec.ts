@@ -24,14 +24,12 @@ describe('RankingFeatureService', () => {
     // Tạo catalog fixture đầy đủ để test chỉ tập trung vào feature cần kiểm tra.
     const createProduct = (): RecommendationCatalogProduct => ({
         productId: 'product-1',
-        originType: 'INTERNAL',
         name: 'Product 1',
         slug: 'product-1',
         imageUrl: null,
         categoryId: 'category-1',
         brandId: 'brand-1',
         sellerShopId: 'shop-1',
-        externalShopId: null,
         minPrice: '100',
         maxPrice: '100',
         ratingAvg: '5',

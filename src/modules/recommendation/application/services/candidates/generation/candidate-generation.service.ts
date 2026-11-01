@@ -335,9 +335,6 @@ export class CandidateGenerationService {
             ...(input.excludedSellerShopId
                 ? { excludeSellerShopId: input.excludedSellerShopId }
                 : {}),
-            ...(input.excludedExternalShopId
-                ? { excludeExternalShopId: input.excludedExternalShopId }
-                : {}),
         };
     }
 

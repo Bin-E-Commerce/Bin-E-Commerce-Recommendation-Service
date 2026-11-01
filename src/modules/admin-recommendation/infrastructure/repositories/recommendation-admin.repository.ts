@@ -325,8 +325,6 @@ export class RecommendationAdminRepository {
                     catalogByProductId.get(row.productId)?.name ?? null,
                 imageUrl:
                     catalogByProductId.get(row.productId)?.imageUrl ?? null,
-                originType:
-                    catalogByProductId.get(row.productId)?.originType ?? null,
                 events: Number(row.events),
                 clicks: Number(row.clicks),
                 cartAdds: Number(row.cartAdds),

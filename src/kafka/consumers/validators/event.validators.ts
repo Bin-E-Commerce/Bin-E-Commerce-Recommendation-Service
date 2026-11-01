@@ -121,9 +121,7 @@ export function validateCatalogEvent(
         requireString(data.name, 'data.name', 500);
         requireString(data.slug, 'data.slug', 620);
     }
-    if (data.originType !== 'INTERNAL' && data.originType !== 'EXTERNAL') {
-        throw new InvalidKafkaEventError('data.originType is not supported');
-    }
+    requireString(data.sellerShopId, 'data.sellerShopId', 128);
     if (!catalogEventNames.has(String(event.eventName))) {
         throw new InvalidKafkaEventError('catalog eventName is not supported');
     }

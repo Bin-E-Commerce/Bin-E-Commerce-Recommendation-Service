@@ -201,9 +201,6 @@ export class RecommendationQueryService {
             ...(currentProduct?.sellerShopId
                 ? { excludeSellerShopId: currentProduct.sellerShopId }
                 : {}),
-            ...(currentProduct?.externalShopId
-                ? { excludeExternalShopId: currentProduct.externalShopId }
-                : {}),
         };
         const strategy: RecommendationStrategy =
             productPreferences.some((item) => item.score > 0) ||
@@ -223,7 +220,6 @@ export class RecommendationQueryService {
             productId: input.productId,
             excludedProductIds: [...excluded],
             excludedSellerShopId: shopExclusions.excludeSellerShopId,
-            excludedExternalShopId: shopExclusions.excludeExternalShopId,
             profileProductIds,
             categoryIds,
             brandIds,
@@ -361,11 +357,9 @@ export class RecommendationQueryService {
         return {
             product: {
                 id: item.product.productId,
-                originType: item.product.originType,
                 name: item.product.name,
                 slug: item.product.slug,
                 sellerShopId: item.product.sellerShopId,
-                externalShopId: item.product.externalShopId,
                 categoryId: item.product.categoryId,
                 minPrice: item.product.minPrice,
                 maxPrice: item.product.maxPrice,
@@ -384,7 +378,6 @@ export class RecommendationQueryService {
                           },
                       ]
                     : [],
-                externalShop: null,
                 brand: null,
             },
             recommendationItemId: this.trackingToken.create({

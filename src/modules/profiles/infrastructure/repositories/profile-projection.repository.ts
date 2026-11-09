@@ -12,6 +12,7 @@ export interface PreferenceUpsertInput {
     dimensionKey: string;
     score: number;
     occurredAt: Date;
+    halfLifeDays: number;
 }
 
 // Adapter transaction cho actor profile, preference và projection ledger.
@@ -83,16 +84,21 @@ export class ProfileProjectionRepository {
         );
     }
 
-    // Cộng điểm preference theo unique dimension key và giữ nguyên mốc tín hiệu mới nhất.
+    // Đưa tổng cũ và event mới về cùng mốc thời gian trước khi cộng; event đến trễ vẫn có tuổi đúng.
+    // Hai tổng dương/âm tách riêng để một return không xóa bằng chứng về hành vi tích cực.
     async upsertPreference(
         input: PreferenceUpsertInput,
         manager: EntityManager,
     ): Promise<void> {
         await manager.query(
-            `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
-       VALUES ($1, $2, $3, $4, $5, 1, $6)
+            `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, positive_score, negative_score, interaction_count, last_signal_at)
+       VALUES ($1, $2, $3, $4, $5, GREATEST($5::double precision, 0), GREATEST(-$5::double precision, 0), 1, $6)
        ON CONFLICT (actor_type, actor_id, dimension, dimension_key)
        DO UPDATE SET score = recommendation_actor_preferences.score + EXCLUDED.score,
+                     positive_score = recommendation_actor_preferences.positive_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - recommendation_actor_preferences.last_signal_at)) / ($7::double precision * 86400))
+                         + EXCLUDED.positive_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - EXCLUDED.last_signal_at)) / ($7::double precision * 86400)),
+                     negative_score = recommendation_actor_preferences.negative_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - recommendation_actor_preferences.last_signal_at)) / ($7::double precision * 86400))
+                         + EXCLUDED.negative_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - EXCLUDED.last_signal_at)) / ($7::double precision * 86400)),
                      interaction_count = recommendation_actor_preferences.interaction_count + 1,
                      last_signal_at = GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at),
                      updated_at = now()`,
@@ -103,6 +109,7 @@ export class ProfileProjectionRepository {
                 input.dimensionKey,
                 input.score,
                 input.occurredAt,
+                input.halfLifeDays,
             ],
         );
     }

@@ -22,26 +22,39 @@ export class ProfileQueryRepository {
         actorId: string,
         dimension: string,
         limit = 12,
+        halfLifeDays = 7,
+        referenceTime = new Date(),
     ): Promise<PreferenceValue[]> {
         // Lấy hai nhóm dương/âm độc lập để một return/refund mạnh không làm mất các preference dương.
         // Application sẽ tiếp tục decay và chọn giới hạn cuối cùng cho ranking.
-        const createQuery = (condition: string) =>
+        const createQuery = (condition: string, scoreColumn: string) =>
             this.preferenceRepository
                 .createQueryBuilder('preference')
                 .where('preference.actor_type = :actorType', { actorType })
                 .andWhere('preference.actor_id = :actorId', { actorId })
                 .andWhere('preference.dimension = :dimension', { dimension })
-                .andWhere(condition);
+                .andWhere(condition)
+                .addSelect(
+                    `${scoreColumn} * POWER(0.5, GREATEST(EXTRACT(EPOCH FROM (CAST(:referenceTime AS timestamptz) - preference.last_signal_at)), 0) / (:halfLifeDays * 86400))`,
+                    'effective_score',
+                )
+                .setParameters({ referenceTime, halfLifeDays });
         const safeLimit = Math.min(Math.max(limit, 1), 50);
         const [positive, negative] = await Promise.all([
-            createQuery('preference.score > 0')
-                .orderBy('preference.score', 'DESC')
+            createQuery(
+                'preference.positive_score > 0',
+                'preference.positive_score',
+            )
+                .orderBy('effective_score', 'DESC')
                 .addOrderBy('preference.last_signal_at', 'DESC')
                 .addOrderBy('preference.dimension_key', 'ASC')
                 .take(safeLimit)
                 .getMany(),
-            createQuery('preference.score < 0')
-                .orderBy('ABS(preference.score)', 'DESC')
+            createQuery(
+                'preference.negative_score > 0',
+                'preference.negative_score',
+            )
+                .orderBy('effective_score', 'DESC')
                 .addOrderBy('preference.last_signal_at', 'DESC')
                 .addOrderBy('preference.dimension_key', 'ASC')
                 .take(safeLimit)
@@ -54,6 +67,7 @@ export class ProfileQueryRepository {
     async mergeGuestSession(
         userId: string,
         sessionId: string,
+        halfLifeDays: number,
         context?: {
             recentProductIds: string[];
             recentCategoryIds: string[];
@@ -94,10 +108,14 @@ export class ProfileQueryRepository {
             );
             for (const preference of guestPreferences) {
                 await manager.query(
-                    `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
-           VALUES ('USER', $1, $2, $3, $4, $5, $6)
+                    `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, positive_score, negative_score, interaction_count, last_signal_at)
+           VALUES ('USER', $1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (actor_type, actor_id, dimension, dimension_key)
            DO UPDATE SET score = recommendation_actor_preferences.score + EXCLUDED.score,
+                         positive_score = recommendation_actor_preferences.positive_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - recommendation_actor_preferences.last_signal_at)) / ($9::double precision * 86400))
+                             + EXCLUDED.positive_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - EXCLUDED.last_signal_at)) / ($9::double precision * 86400)),
+                         negative_score = recommendation_actor_preferences.negative_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - recommendation_actor_preferences.last_signal_at)) / ($9::double precision * 86400))
+                             + EXCLUDED.negative_score * POWER(0.5, EXTRACT(EPOCH FROM (GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at) - EXCLUDED.last_signal_at)) / ($9::double precision * 86400)),
                          interaction_count = recommendation_actor_preferences.interaction_count + EXCLUDED.interaction_count,
                          last_signal_at = GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at),
                          updated_at = now()`,
@@ -106,8 +124,11 @@ export class ProfileQueryRepository {
                         preference.dimension,
                         preference.dimensionKey,
                         preference.score,
+                        preference.positiveScore,
+                        preference.negativeScore,
                         preference.interactionCount,
                         preference.lastSignalAt,
+                        halfLifeDays,
                     ],
                 );
             }
@@ -156,11 +177,9 @@ export class ProfileQueryRepository {
                     )
                         continue;
                     await manager.query(
-                        `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, interaction_count, last_signal_at)
-             VALUES ('USER', $1, $2, $3, 0.5, 0, $4)
-             ON CONFLICT (actor_type, actor_id, dimension, dimension_key)
-             DO UPDATE SET last_signal_at = GREATEST(recommendation_actor_preferences.last_signal_at, EXCLUDED.last_signal_at),
-                           updated_at = now()`,
+                        `INSERT INTO recommendation_actor_preferences (actor_type, actor_id, dimension, dimension_key, score, positive_score, negative_score, interaction_count, last_signal_at)
+             VALUES ('USER', $1, $2, $3, 0.5, 0.5, 0, 0, $4)
+             ON CONFLICT (actor_type, actor_id, dimension, dimension_key) DO NOTHING`,
                         [userId, signal.dimension, signal.key, safeSignalAt],
                     );
                 }

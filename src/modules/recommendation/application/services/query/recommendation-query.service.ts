@@ -73,7 +73,7 @@ export class RecommendationQueryService {
             ),
         ]);
         const ruleVersion = encodeURIComponent(policyVersion);
-        const cacheKey = `recommendation:contract-v5:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}`;
+        const cacheKey = `recommendation:contract-v6:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}`;
         const cached =
             await this.redis.getJson<RecommendationResponse>(cacheKey);
         if (cached) {

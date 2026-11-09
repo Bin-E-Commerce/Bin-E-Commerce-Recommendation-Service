@@ -56,6 +56,12 @@ export interface RuntimeRecommendationPolicy {
     mlBlend?: number;
 }
 
+export interface ProfileAffinityConfig {
+    product: { weight: number; scale: number };
+    category: { weight: number; scale: number };
+    brand: { weight: number; scale: number };
+}
+
 const DEFAULT_HYBRID_RANKING_WEIGHTS: HybridRankingWeights = {
     profileAffinity: 0.25,
     sessionContext: 0.18,
@@ -136,12 +142,63 @@ export class RecommendationRuleService {
         return Number.isFinite(value) && value > 0 ? value : 7;
     }
 
+    // Đọc ngưỡng chuẩn hóa và trọng số ba chiều, rồi chuẩn hóa trọng số về tổng 1.
+    // Giá trị sai quay về mặc định; các mặc định là giả thuyết nghiệp vụ, cần đánh giá trên log thật.
+    getProfileAffinityConfig(): ProfileAffinityConfig {
+        const defaults = {
+            product: { weight: 0.5, scale: 8 },
+            category: { weight: 0.3, scale: 16 },
+            brand: { weight: 0.2, scale: 8 },
+        };
+        const dimensions = ['product', 'category', 'brand'] as const;
+        // Mỗi chiều đọc cùng quy tắc validate trước khi chuẩn hóa tổng trọng số.
+        const readDimension = (dimension: (typeof dimensions)[number]) => {
+            const prefix = `RECOMMENDATION_PROFILE_${dimension.toUpperCase()}`;
+            const weight = Number(
+                this.config.get<string>(
+                    `${prefix}_WEIGHT`,
+                    String(defaults[dimension].weight),
+                ),
+            );
+            const scale = Number(
+                this.config.get<string>(
+                    `${prefix}_SCALE`,
+                    String(defaults[dimension].scale),
+                ),
+            );
+            return {
+                weight:
+                    Number.isFinite(weight) && weight >= 0
+                        ? weight
+                        : defaults[dimension].weight,
+                scale:
+                    Number.isFinite(scale) && scale > 0
+                        ? scale
+                        : defaults[dimension].scale,
+            };
+        };
+        const configured: ProfileAffinityConfig = {
+            product: readDimension('product'),
+            category: readDimension('category'),
+            brand: readDimension('brand'),
+        };
+        const total = dimensions.reduce(
+            (sum, dimension) => sum + configured[dimension].weight,
+            0,
+        );
+        if (total <= 0) return defaults;
+        for (const dimension of dimensions) {
+            configured[dimension].weight /= total;
+        }
+        return configured;
+    }
+
     // Rule version đi cùng response/cache giúp phân biệt kết quả sinh bởi policy nào khi deploy thay đổi trọng số.
     getRuleVersion(): string {
         if (this.runtimePolicy?.version) return this.runtimePolicy.version;
         return this.config.get<string>(
             'RECOMMENDATION_RULE_VERSION',
-            'standard-ranking-v1',
+            'standard-ranking-profile-v2',
         );
     }
 
@@ -190,7 +247,7 @@ export class RecommendationRuleService {
         if (this.runtimePolicy?.version) return this.runtimePolicy.version;
         return this.config.get<string>(
             'RECOMMENDATION_RANKING_POLICY_VERSION',
-            'standard-ranking-v1',
+            'standard-ranking-profile-v2',
         );
     }
 

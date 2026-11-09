@@ -54,21 +54,27 @@ export class RankingFeatureService {
                 this.normalizeRelation(item.rawScore, item.relationType),
             )
             .reduce((max, value) => Math.max(max, value), 0);
+        const affinityConfig = this.rules.getProfileAffinityConfig();
         const profileProduct = this.positivePreferenceScore(
             productPreference,
             referenceTime,
+            affinityConfig.product.scale,
         );
         const profileCategory = this.positivePreferenceScore(
             categoryPreference,
             referenceTime,
+            affinityConfig.category.scale,
         );
         const profileBrand = this.positivePreferenceScore(
             brandPreference,
             referenceTime,
+            affinityConfig.brand.scale,
         );
-        const profileAffinity = this.clamp(
-            profileProduct + profileCategory * 0.6 + profileBrand * 0.4,
-        );
+        // Trọng số đã được chuẩn hóa nên tổ hợp lồi luôn nằm trong [0, 1].
+        const profileAffinity =
+            profileProduct * affinityConfig.product.weight +
+            profileCategory * affinityConfig.category.weight +
+            profileBrand * affinityConfig.brand.weight;
         const sessionContext = this.sessionScore(candidate, context);
         const popularity = this.clamp(
             Math.max(
@@ -86,7 +92,11 @@ export class RankingFeatureService {
         const quality = this.qualityScore(candidate);
         const exploration = this.explorationScore(candidate, profileAffinity);
         const negativePenalty = this.negativePenalty(
-            [productPreference, categoryPreference, brandPreference],
+            [
+                [productPreference, affinityConfig.product.scale],
+                [categoryPreference, affinityConfig.category.scale],
+                [brandPreference, affinityConfig.brand.scale],
+            ],
             referenceTime,
         );
 
@@ -103,43 +113,57 @@ export class RankingFeatureService {
         };
     }
 
-    // Tính preference đã decay để tín hiệu mới có ảnh hưởng lớn hơn nhưng không vượt quá bound của ranker.
+    // Tổng dương đã decay tại lastSignalAt tiếp tục giảm đến thời điểm ranking.
+    // Ngưỡng M theo dimension giữ điểm trong [0, 1] mà không dùng mẫu số cố định cũ.
     private positivePreferenceScore(
         value: PreferenceValue | undefined,
         referenceTime: Date,
+        scale: number,
     ): number {
         if (!value) return 0;
-        const decayed = this.decayedPreferenceScore(value, referenceTime);
-        return this.clamp(Math.max(0, decayed) / 8);
+        return Math.min(
+            1,
+            this.decayedComponentScore(
+                value.positiveScore,
+                value.lastSignalAt,
+                referenceTime,
+            ) / scale,
+        );
     }
 
-    // Giữ negative preference thành penalty riêng để tín hiệu trả hàng không bị trộn với positive affinity.
+    // Tổng âm đã được lưu riêng nên không triệt tiêu sở thích dương của cùng một mục.
     private negativePenalty(
-        values: Array<PreferenceValue | undefined>,
+        values: Array<[PreferenceValue | undefined, number]>,
         referenceTime: Date,
     ): number {
-        const negative = values.reduce((sum, value) => {
-            if (!value || value.score >= 0) return sum;
+        const negative = values.reduce((sum, [value, scale]) => {
+            if (!value) return sum;
             return (
                 sum +
-                Math.abs(this.decayedPreferenceScore(value, referenceTime)) / 8
+                this.decayedComponentScore(
+                    value.negativeScore,
+                    value.lastSignalAt,
+                    referenceTime,
+                ) /
+                    scale
             );
         }, 0);
         return Math.min(0.15, this.clamp(negative) * 0.15);
     }
 
-    // Dùng chung decay cho positive và negative signal để return/refund cũ không phạt user vĩnh viễn.
-    private decayedPreferenceScore(
-        value: PreferenceValue,
+    // Mỗi tổng tại mốc lastSignalAt là tổng các event đã decay riêng khi projection.
+    // Chỉ giảm thêm từ mốc đó đến referenceTime; sự kiện tương lai có tuổi 0.
+    private decayedComponentScore(
+        score: number,
+        lastSignalAt: Date,
         referenceTime: Date,
     ): number {
         const ageDays = Math.max(
             0,
-            (referenceTime.getTime() - value.lastSignalAt.getTime()) /
-                86_400_000,
+            (referenceTime.getTime() - lastSignalAt.getTime()) / 86_400_000,
         );
         return (
-            value.score *
+            Math.max(0, score) *
             Math.pow(0.5, ageDays / this.rules.getProfileHalfLifeDays())
         );
     }

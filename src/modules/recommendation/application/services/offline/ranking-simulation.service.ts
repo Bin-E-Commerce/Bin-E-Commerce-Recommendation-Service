@@ -526,6 +526,8 @@ export class RankingSimulationService {
             dimension,
             dimensionKey,
             score,
+            positiveScore: Math.max(0, score),
+            negativeScore: Math.max(0, -score),
             interactionCount: 3,
             lastSignalAt,
         };

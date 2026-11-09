@@ -279,6 +279,7 @@ export class ProfileProjectionService {
             {
                 ...input,
                 dimensionKey: input.dimensionKey,
+                halfLifeDays: this.rules.getProfileHalfLifeDays(),
             },
             manager,
         );

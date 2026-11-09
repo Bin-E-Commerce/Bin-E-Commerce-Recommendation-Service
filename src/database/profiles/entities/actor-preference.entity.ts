@@ -52,9 +52,17 @@ export class RecommendationActorPreferenceEntity {
     @Column({ name: 'dimension_key', type: 'varchar', length: 255 })
     dimensionKey!: string;
 
-    // Điểm sở thích tích lũy từ các behavior weight; ranking sẽ áp dụng decay theo lastSignalAt.
+    // Tổng điểm cũ giữ cho dữ liệu tương thích; ranking dùng hai tổng đã decay bên dưới.
     @Column({ type: 'double precision', default: 0 })
     score!: number;
+
+    // Tổng tín hiệu dương tại lastSignalAt; mỗi event được decay trước khi nhập vào tổng.
+    @Column({ name: 'positive_score', type: 'double precision', default: 0 })
+    positiveScore!: number;
+
+    // Tổng độ lớn tín hiệu âm tại lastSignalAt để penalty không triệt tiêu sở thích dương.
+    @Column({ name: 'negative_score', type: 'double precision', default: 0 })
+    negativeScore!: number;
 
     // Số event đã đóng góp vào preference, dùng đánh giá độ ổn định của tín hiệu bên cạnh score.
     @Column({ name: 'interaction_count', type: 'integer', default: 0 })

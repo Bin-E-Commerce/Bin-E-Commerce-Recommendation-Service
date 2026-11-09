@@ -9,6 +9,8 @@ export interface PreferenceValue {
     dimension: RecommendationPreferenceDimension;
     dimensionKey: string;
     score: number;
+    positiveScore: number;
+    negativeScore: number;
     interactionCount: number;
     lastSignalAt: Date;
 }

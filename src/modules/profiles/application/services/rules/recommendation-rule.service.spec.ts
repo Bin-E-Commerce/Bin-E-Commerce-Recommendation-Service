@@ -51,6 +51,31 @@ describe('RecommendationRuleService', () => {
         expect(halfLifeDays).toBe(7);
     });
 
+    it('should normalize profile dimension weights and reject invalid scales', () => {
+        // Arrange: hai trọng số không còn tổng 1 và scale không hợp lệ phải quay về mặc định.
+        const config = {
+            get: jest.fn(
+                (key: string, fallback?: string) =>
+                    ({
+                        RECOMMENDATION_PROFILE_PRODUCT_WEIGHT: '2',
+                        RECOMMENDATION_PROFILE_CATEGORY_WEIGHT: '1',
+                        RECOMMENDATION_PROFILE_BRAND_WEIGHT: '0',
+                        RECOMMENDATION_PROFILE_CATEGORY_SCALE: '-1',
+                    })[key] ?? fallback,
+            ),
+        } as unknown as ConfigService;
+        target = new RecommendationRuleService(config);
+
+        // Act
+        const affinity = target.getProfileAffinityConfig();
+
+        // Assert
+        expect(affinity.product.weight).toBeCloseTo(2 / 3);
+        expect(affinity.category.weight).toBeCloseTo(1 / 3);
+        expect(affinity.brand.weight).toBe(0);
+        expect(affinity.category.scale).toBe(16);
+    });
+
     it('should keep purchase and return weights configurable with their expected signs', () => {
         // Arrange
         const config = {

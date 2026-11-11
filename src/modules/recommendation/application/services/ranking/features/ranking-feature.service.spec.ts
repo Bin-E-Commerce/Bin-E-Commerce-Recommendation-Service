@@ -268,13 +268,14 @@ describe('RankingFeatureService', () => {
             expect(result.profileAffinity).toBeLessThanOrEqual(1);
         });
 
-        // Session signal phải đúng tổng trọng số của ba phép khớp và bằng 0 khi thiếu context.
-        it('should compute session context from category, brand, and anchor matches', () => {
+        // Vị trí đầu nhận 1, vị trí thứ hai nhận 1/2 ở mỗi chiều rồi hai chiều được lấy trung bình.
+        it('should rank recent category and brand matches by position', () => {
+            // Arrange
             const context = {
                 sessionId: 'session-1',
                 recentProductIds: [],
-                recentCategoryIds: ['category-1'],
-                recentBrandIds: ['brand-1'],
+                recentCategoryIds: ['category-1', 'category-2'],
+                recentBrandIds: ['brand-2', 'brand-1'],
                 currentProductId: 'anchor-1',
                 currentCategoryId: null,
                 latestQuery: null,
@@ -291,12 +292,74 @@ describe('RankingFeatureService', () => {
                 },
             ]);
 
+            // Act
             const result = target.build(candidate, [], [], [], context);
 
-            expect(result.sessionContext).toBeCloseTo(1);
+            // Assert: category mới nhất = 1, brand cũ hơn = 1/2.
+            expect(result.sessionContext).toBeCloseTo(0.75);
             expect(
                 target.build(candidate, [], [], [], null).sessionContext,
             ).toBe(0);
+        });
+
+        // Candidate đến từ sản phẩm đang xem không tự chứng minh danh mục hoặc thương hiệu đang được quan tâm.
+        it('should not score an anchor match without session attribute matches', () => {
+            // Arrange
+            const candidate = createCandidate([
+                {
+                    source: 'SEMANTIC_SIMILARITY',
+                    rawScore: 0.8,
+                    reasonCode: 'SIMILAR',
+                    anchorProductId: 'anchor-1',
+                },
+            ]);
+            const context = {
+                sessionId: 'session-1',
+                recentProductIds: [],
+                recentCategoryIds: ['category-other'],
+                recentBrandIds: ['brand-other'],
+                currentProductId: 'anchor-1',
+                currentCategoryId: null,
+                latestQuery: null,
+                cartProductIds: [],
+                intentUpdatedAt: '2026-11-09T00:00:00.000Z',
+                version: 1,
+            };
+
+            // Act
+            const result = target.build(candidate, [], [], [], context);
+
+            // Assert
+            expect(result.sessionContext).toBe(0);
+        });
+
+        // Khi chỉ một chiều khớp, trung bình hai chiều giữ điểm tại 0.5 thay vì suy diễn chiều còn lại.
+        it('should not infer a brand match from a category-only session', () => {
+            // Arrange
+            const context = {
+                sessionId: 'session-1',
+                recentProductIds: [],
+                recentCategoryIds: ['category-1'],
+                recentBrandIds: [],
+                currentProductId: null,
+                currentCategoryId: null,
+                latestQuery: null,
+                cartProductIds: [],
+                intentUpdatedAt: '2026-11-09T00:00:00.000Z',
+                version: 1,
+            };
+
+            // Act
+            const result = target.build(
+                createCandidate([]),
+                [],
+                [],
+                [],
+                context,
+            );
+
+            // Assert
+            expect(result.sessionContext).toBe(0.5);
         });
 
         // Semantic feature chỉ nhận semantic contribution và giới hạn raw similarity vào [0, 1].
@@ -388,9 +451,7 @@ describe('RankingFeatureService', () => {
             );
 
             expect(ranked.popularity).toBeCloseTo(0.75);
-            expect(missingListSize.popularity).toBeCloseTo(
-                Math.log1p(10) / 12,
-            );
+            expect(missingListSize.popularity).toBeCloseTo(Math.log1p(10) / 12);
         });
 
         // Freshness không tăng khi tuổi sản phẩm lớn hơn; các mốc bucket cố định phải khớp code.
@@ -451,9 +512,9 @@ describe('RankingFeatureService', () => {
             );
             const referenceTime = new Date('2026-11-09T00:00:00.000Z');
 
-            expect(
-                target.build(candidate, [], [], [], null).exploration,
-            ).toBe(1);
+            expect(target.build(candidate, [], [], [], null).exploration).toBe(
+                1,
+            );
             expect(
                 target.build(
                     candidate,

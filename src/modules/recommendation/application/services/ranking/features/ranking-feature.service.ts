@@ -168,28 +168,36 @@ export class RankingFeatureService {
         );
     }
 
-    // Session score ưu tiên category/brand gần đây nhưng vẫn bounded để không lấn át profile dài hạn.
+    // Hai chuỗi category/brand là các khóa duy nhất, mới nhất đứng đầu; chỉ hành động chủ động mới cập nhật chúng.
+    // Chiết khấu tuyến tính theo vị trí trong từng chuỗi, rồi lấy trung bình hai chiều để score nằm trong [0, 1].
+    // Anchor thuộc provenance của candidate nên không được cộng lần nữa vào bằng chứng sở thích của phiên.
     private sessionScore(
         candidate: RecommendationCandidate,
         context: SessionContext | null,
     ): number {
         if (!context) return 0;
-        const categoryMatch =
-            candidate.product.categoryId &&
-            context.recentCategoryIds.includes(candidate.product.categoryId)
-                ? 0.6
-                : 0;
-        const brandMatch =
-            candidate.product.brandId &&
-            context.recentBrandIds.includes(candidate.product.brandId)
-                ? 0.25
-                : 0;
-        const anchorMatch = (candidate.contributions ?? []).some(
-            (item) => item.anchorProductId === context.currentProductId,
-        )
-            ? 0.15
-            : 0;
-        return this.clamp(categoryMatch + brandMatch + anchorMatch);
+        const category = this.sessionPositionWeight(
+            candidate.product.categoryId,
+            context.recentCategoryIds,
+        );
+        const brand = this.sessionPositionWeight(
+            candidate.product.brandId,
+            context.recentBrandIds,
+        );
+        return (category + brand) / 2;
+    }
+
+    // Dùng cùng ý tưởng trọng số vị trí tuyến tính như v-SKNN, nhưng chỉ chấm thuộc tính category/brand.
+    // Đây không phải toàn bộ v-SKNN vì feature này không tìm phiên láng giềng hay tính cosine.
+    // Không có khóa hoặc không khớp thì 0; vị trí đầu là 1, cuối là 1/L với L là độ dài danh sách.
+    private sessionPositionWeight(
+        key: string | null | undefined,
+        recentKeys: string[],
+    ): number {
+        if (!key || recentKeys.length === 0) return 0;
+        const position = recentKeys.indexOf(key);
+        if (position < 0) return 0;
+        return (recentKeys.length - position) / recentKeys.length;
     }
 
     // Semantic score của Qdrant đã là similarity; clamp để provider thay đổi không làm điểm vượt policy.
@@ -231,9 +239,7 @@ export class RankingFeatureService {
                     return 0;
                 }
                 // Hạng 1 có điểm 1, hạng cuối 0; source chỉ có một item nhận điểm 1.
-                return size === 1
-                    ? 1
-                    : this.clamp(1 - (rank - 1) / (size - 1));
+                return size === 1 ? 1 : this.clamp(1 - (rank - 1) / (size - 1));
             })
             .reduce((max, value) => Math.max(max, value), 0);
     }

@@ -182,6 +182,7 @@ export class RecommendationMlRankingService {
                     },
                     body: JSON.stringify({
                         requestId: input.requestId || randomUUID(),
+                        featureSchemaVersion: 'ranking-features-v3',
                         items,
                     }),
                     signal: controller.signal,

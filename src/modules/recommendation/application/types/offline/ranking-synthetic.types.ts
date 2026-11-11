@@ -68,7 +68,7 @@ export interface RankingSyntheticEvent {
 
 export interface RankingSyntheticRow {
     datasetVersion: 'ranking-synthetic-v1';
-    featureSchemaVersion: 'ranking-features-v2';
+    featureSchemaVersion: 'ranking-features-v3';
     userId: string;
     sessionId: string;
     requestId: string;

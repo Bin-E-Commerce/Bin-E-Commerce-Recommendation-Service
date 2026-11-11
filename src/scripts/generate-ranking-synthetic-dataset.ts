@@ -286,7 +286,7 @@ async function writeDataset(
               );
     const manifest = {
         datasetVersion: 'ranking-synthetic-v1',
-        featureSchemaVersion: 'ranking-features-v2',
+        featureSchemaVersion: 'ranking-features-v3',
         catalogSource:
             options.syntheticCatalogSize === null
                 ? 'recommendation_catalog_products'

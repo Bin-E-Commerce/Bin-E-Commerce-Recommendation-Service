@@ -263,7 +263,7 @@ export class RankingSimulationService {
             if (!action) throw new Error('SYNTHETIC_ACTION_MISSING');
             rows.push({
                 datasetVersion: 'ranking-synthetic-v1',
-                featureSchemaVersion: 'ranking-features-v2',
+                featureSchemaVersion: 'ranking-features-v3',
                 userId: persona.userId,
                 sessionId: session.sessionId,
                 requestId: session.requestId,

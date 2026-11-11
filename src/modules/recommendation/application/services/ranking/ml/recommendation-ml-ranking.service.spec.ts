@@ -81,9 +81,10 @@ describe('RecommendationMlRankingService', () => {
     });
 
     // Raw score có thể âm hoặc lớn hơn một; adapter giữ nguyên vì đây không phải xác suất.
+    // Request phải ghi schema v3 để AI service từ chối vector từ công thức phiên cũ.
     it('should preserve LambdaRank raw relevance scores and map them to candidate IDs', async () => {
         // Arrange
-        jest.spyOn(global, 'fetch').mockResolvedValue({
+        const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValue({
             ok: true,
             json: async () => ({
                 modelVersion: 'ranking-lambdarank-v2',
@@ -97,7 +98,10 @@ describe('RecommendationMlRankingService', () => {
         // Act
         const result = await target.predict({
             requestId: 'request-1',
-            candidates: [createCandidate('product-1'), createCandidate('product-2')],
+            candidates: [
+                createCandidate('product-1'),
+                createCandidate('product-2'),
+            ],
             products: [],
             categories: [],
             brands: [],
@@ -118,6 +122,11 @@ describe('RecommendationMlRankingService', () => {
                 ['product-2', featureVector],
             ]),
         );
+        const request = mockFetch.mock.calls[0]?.[1];
+        expect(JSON.parse(String(request?.body))).toMatchObject({
+            requestId: 'request-1',
+            featureSchemaVersion: 'ranking-features-v3',
+        });
     });
 
     // Lỗi mạng không được trả điểm rỗng để query tự hiểu nhầm là ranker khác đã phục vụ.

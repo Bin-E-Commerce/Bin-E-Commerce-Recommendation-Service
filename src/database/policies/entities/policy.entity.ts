@@ -1,4 +1,4 @@
-// Entity này lưu version policy ranking do Admin thay đổi; Recommendation vẫn có env fallback nếu chưa có bản ghi active.
+// Entity này giữ lại ranking policy history cũ để audit; các record legacy không điều khiển LambdaRank serving hiện tại.
 
 import {
     Column,
@@ -22,7 +22,7 @@ export class RecommendationPolicyEntity {
     @Column({ type: 'varchar', length: 16, default: 'ACTIVE' })
     status!: 'ACTIVE' | 'ARCHIVED';
 
-    // Cấu hình chứa control/hybrid weights và flag, đã được application service validate trước khi lưu.
+    // JSON giữ cấu hình policy legacy để đọc lại lịch sử, không được dùng làm feature weights hoặc model blend.
     @Column({ type: 'jsonb' })
     config!: Record<string, unknown>;
 

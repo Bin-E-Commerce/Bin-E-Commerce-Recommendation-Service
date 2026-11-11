@@ -190,7 +190,9 @@ export function validateInteractionEvent(
     if (
         recommendationRankingMode !== null &&
         recommendationRankingMode !== undefined &&
-        !['HYBRID', 'ML_HYBRID'].includes(String(recommendationRankingMode))
+        !['AI_MODEL', 'HYBRID', 'ML_HYBRID'].includes(
+            String(recommendationRankingMode),
+        )
     ) {
         throw new InvalidInteractionEventError(
             'recommendationRankingMode is not supported',
@@ -253,7 +255,10 @@ export function validateInteractionEvent(
                 recommendationRankingMode === null ||
                 recommendationRankingMode === undefined
                     ? null
-                    : (recommendationRankingMode as 'HYBRID' | 'ML_HYBRID'),
+                    : (recommendationRankingMode as
+                          | 'AI_MODEL'
+                          | 'HYBRID'
+                          | 'ML_HYBRID'),
         },
     };
 }

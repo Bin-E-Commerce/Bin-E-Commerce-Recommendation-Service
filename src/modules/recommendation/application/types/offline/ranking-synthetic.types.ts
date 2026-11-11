@@ -59,6 +59,7 @@ export interface RankingSyntheticEvent {
     userId: string;
     sessionId: string;
     requestId: string;
+    requestAt: string;
     itemId: string;
     interactionType: SyntheticInteractionType;
     position: number;
@@ -67,10 +68,11 @@ export interface RankingSyntheticEvent {
 
 export interface RankingSyntheticRow {
     datasetVersion: 'ranking-synthetic-v1';
-    featureSchemaVersion: 'ranking-features-v1';
+    featureSchemaVersion: 'ranking-features-v2';
     userId: string;
     sessionId: string;
     requestId: string;
+    requestAt: string;
     itemId: string;
     position: number;
     features: number[];

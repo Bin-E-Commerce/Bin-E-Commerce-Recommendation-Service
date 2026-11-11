@@ -25,7 +25,7 @@ type RecommendationAttribution = {
     recommendationRank: number | null;
     surface: RecommendationTrackingTokenInput['surface'] | null;
     recommendationPolicyVersion: string | null;
-    recommendationRankingMode: 'HYBRID' | 'ML_HYBRID' | null;
+    recommendationRankingMode: 'AI_MODEL' | 'HYBRID' | 'ML_HYBRID' | null;
 };
 
 type TrustedActor = {
@@ -236,7 +236,10 @@ export class InteractionIngestionService {
             source: recommendationSource,
             surface,
             policyVersion: recommendationPolicyVersion,
-            rankingMode: recommendationRankingMode as 'HYBRID' | 'ML_HYBRID',
+            rankingMode: recommendationRankingMode as
+                | 'AI_MODEL'
+                | 'HYBRID'
+                | 'ML_HYBRID',
         });
         if (!isValid) {
             throw new BadRequestException('Invalid recommendation attribution');

@@ -119,7 +119,8 @@ export class ProfileProjectionService {
         ]);
     }
 
-    // Project purchase/return với weight mạnh hơn browsing và dùng cùng projection ledger để chống duplicate.
+    // Project purchase/return cho product, category và brand snapshot với cùng ledger chống duplicate.
+    // Thiếu category/brand vẫn giữ được preference product; event cũ không có brandId tiếp tục tương thích.
     async projectPurchase(event: OrderPurchaseEvent): Promise<void> {
         const occurredAt = this.parseOccurredAt(event.data.occurredAt);
         const weight = this.rules.getPurchaseWeight(event.eventName);
@@ -158,6 +159,17 @@ export class ProfileProjectionService {
                             actorId: event.data.customerUserId,
                             dimension: 'CATEGORY',
                             dimensionKey: item.categoryId,
+                            score: weight * item.quantity,
+                            occurredAt,
+                        },
+                        manager,
+                    );
+                    await this.upsertPreference(
+                        {
+                            actorType: 'USER',
+                            actorId: event.data.customerUserId,
+                            dimension: 'BRAND',
+                            dimensionKey: item.brandId ?? null,
                             score: weight * item.quantity,
                             occurredAt,
                         },

@@ -1,4 +1,4 @@
-// CLI offline đọc catalog read model và ghi dataset synthetic; không khởi động HTTP, không publish Kafka và không ghi profile.
+// CLI offline tạo dataset ranking synthetic từ catalog DB hoặc catalog giả lập; không ghi profile hay publish Kafka.
 
 import { ConfigService } from '@nestjs/config';
 import { Pool, type QueryResultRow } from 'pg';
@@ -46,6 +46,7 @@ interface CliOptions {
     targetEvents: number;
     seed: number;
     catalogLimit: number;
+    syntheticCatalogSize: number | null;
     output: string;
     referenceTime: Date;
 }
@@ -110,6 +111,9 @@ function parseArguments(argv: string[]): CliOptions {
             20_000,
             100_000,
         ),
+        syntheticCatalogSize: values.has('synthetic-catalog-size')
+            ? parsePositive(values.get('synthetic-catalog-size'), 500, 100_000)
+            : null,
         output: resolve(
             process.cwd(),
             values.get('output') ??
@@ -117,6 +121,63 @@ function parseArguments(argv: string[]): CliOptions {
         ),
         referenceTime,
     };
+}
+
+// Tạo catalog giả có danh mục và thương hiệu phân tán để simulator chạy độc lập với dữ liệu PostgreSQL thật.
+// ID có tiền tố synthetic giúp đầu ra không thể bị nhầm với catalog production; mọi thuộc tính đều xác định theo index.
+function createSyntheticCatalog(
+    size: number,
+    referenceTime: Date,
+): RecommendationCatalogProduct[] {
+    const categoryCount = 32;
+    const brandCount = 24;
+    const sellerCount = 40;
+    const dayMilliseconds = 86_400_000;
+
+    return Array.from({ length: size }, (_, index) => {
+        const sequence = String(index + 1).padStart(6, '0');
+        const categoryNumber = index % categoryCount;
+        const brandNumber =
+            (Math.floor(index / categoryCount) * 7 + (index % 7)) % brandCount;
+        const categoryId = `synthetic-category-${String(categoryNumber + 1).padStart(2, '0')}`;
+        const brandId = `synthetic-brand-${String(brandNumber + 1).padStart(2, '0')}`;
+        const createdAt = new Date(
+            referenceTime.getTime() - ((index * 7919) % 730) * dayMilliseconds,
+        );
+        const minPrice = 100 + ((index * 137) % 10_000);
+
+        return {
+            productId: `synthetic-product-${sequence}`,
+            name: `Sản phẩm giả lập ${sequence}`,
+            slug: `synthetic-product-${sequence}`,
+            imageUrl: null,
+            categoryId,
+            brandId,
+            sellerShopId: `synthetic-seller-${String((index % sellerCount) + 1).padStart(2, '0')}`,
+            minPrice: minPrice.toFixed(2),
+            maxPrice: (minPrice + 50 + (index % 500)).toFixed(2),
+            ratingAvg: (3 + (index % 21) / 10).toFixed(1),
+            reviewCount: (index * 13) % 3_000,
+            totalSold: (index * 37) % 10_000,
+            status: 'ACTIVE',
+            isInStock: true,
+            createdAt,
+            updatedAt: createdAt,
+            catalogVersion: 'synthetic-catalog-v1',
+            shortDescription: `Mô tả giả lập cho danh mục ${categoryNumber + 1}`,
+            description: `Dữ liệu synthetic phục vụ kiểm thử ranking, sản phẩm ${sequence}.`,
+            brandName: `Thương hiệu giả lập ${brandNumber + 1}`,
+            categoryPath: `Danh mục giả lập / ${categoryNumber + 1}`,
+            semanticAttributes: [
+                { key: 'category', value: categoryId },
+                { key: 'brand', value: brandId },
+            ],
+            contentHash: `synthetic-content-${sequence}`,
+            embeddingStatus: 'READY',
+            embeddingModelVersion: 'synthetic-embedding-v1',
+            embeddingDimensions: 384,
+        };
+    });
 }
 
 // Đọc catalog bằng query read-only, chỉ lấy product active còn hàng làm candidate source cho simulator.
@@ -225,7 +286,11 @@ async function writeDataset(
               );
     const manifest = {
         datasetVersion: 'ranking-synthetic-v1',
-        featureSchemaVersion: 'ranking-features-v1',
+        featureSchemaVersion: 'ranking-features-v2',
+        catalogSource:
+            options.syntheticCatalogSize === null
+                ? 'recommendation_catalog_products'
+                : 'synthetic_catalog',
         seed: options.seed,
         referenceTime: options.referenceTime.toISOString(),
         requestedUsers: options.users,
@@ -277,11 +342,18 @@ async function writeDataset(
     ]);
 }
 
-// CLI entrypoint: load config, read catalog, generate deterministic data và đóng toàn bộ resource trước khi thoát.
+// CLI entrypoint: chọn catalog theo option, tính feature bằng production builder và chỉ ghi dataset vào output directory.
 async function main(): Promise<void> {
     await loadEnvironmentFiles();
     const options = parseArguments(process.argv.slice(2));
-    const catalog = await loadCatalog(options.catalogLimit);
+    // Chế độ synthetic không mở kết nối PostgreSQL; chế độ mặc định chỉ đọc catalog recommendation đã được đồng bộ.
+    const catalog =
+        options.syntheticCatalogSize === null
+            ? await loadCatalog(options.catalogLimit)
+            : createSyntheticCatalog(
+                  options.syntheticCatalogSize,
+                  options.referenceTime,
+              );
     const config = new ConfigService(process.env);
     const rules = new RecommendationRuleService(config);
     const features = new RankingFeatureService(rules);
@@ -310,6 +382,7 @@ Options:
   --events <number>         Target event budget (default: 100000)
   --seed <integer>          Deterministic seed (default: 42)
   --catalog-limit <number>  Catalog rows to read (default: 20000)
+  --synthetic-catalog-size <number>  Generate a local synthetic catalog and skip PostgreSQL
   --reference-time <iso>    Fixed feature clock (default: 2026-01-01T00:00:00Z)
   --output <path>            Output dataset directory
 `);

@@ -266,6 +266,10 @@ export function validatePurchaseEvent(
                 128,
             );
         }
+        // Event v1 cũ không có brandId; nếu trường mới xuất hiện thì chỉ chấp nhận null hoặc khóa dạng chuỗi.
+        if (item.brandId !== null && item.brandId !== undefined) {
+            requireString(item.brandId, `data.items[${index}].brandId`, 128);
+        }
         if (
             typeof item.quantity !== 'number' ||
             !Number.isInteger(item.quantity) ||

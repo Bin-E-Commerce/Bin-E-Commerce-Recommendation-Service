@@ -48,6 +48,6 @@ export interface RecommendationResponse {
     generatedAt: string;
     ruleVersion: string;
     rankingPolicyVersion: string;
-    rankingMode: 'HYBRID' | 'ML_HYBRID';
+    rankingMode: 'AI_MODEL';
     rankingModelVersion: string | null;
 }

@@ -3,7 +3,7 @@
 
 # Recommendation Service
 
-Help each customer find the next product that makes sense, using intent, context, catalog intelligence, and safe AI fallback.
+Ranks relevant products for each customer using profile, session, catalog, and interaction signals with a trained LambdaRank model.
 
   <p>
     <img src="https://img.shields.io/badge/NestJS-11-E0234E?logo=nestjs&logoColor=white" alt="NestJS 11" />
@@ -13,7 +13,7 @@ Help each customer find the next product that makes sense, using intent, context
     <img src="https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&logoColor=white" alt="Kafka" />
     <img src="https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white" alt="Redis" />
     <img src="https://img.shields.io/badge/Qdrant-semantic-FF4F64" alt="Qdrant" />
-    <img src="https://img.shields.io/badge/AI-hybrid%20ranking-7C3AED" alt="AI hybrid ranking" />
+    <img src="https://img.shields.io/badge/AI-LambdaRank-7C3AED" alt="AI LambdaRank" />
   </p>
 
 [Portfolio](https://daongocanh.site)
@@ -34,9 +34,9 @@ Help each customer find the next product that makes sense, using intent, context
 8. [Recommendation request flow](#8-recommendation-request-flow)
 9. [Identity, profiles, and sessions](#9-identity-profiles-and-sessions)
 10. [Candidate pipeline](#10-candidate-pipeline)
-11. [Standard Ranking](#11-standard-ranking)
-12. [AI-Enhanced Ranking](#12-ai-enhanced-ranking)
-13. [AI mode and observability](#13-ai-mode-and-observability)
+11. [LambdaRank model-only ranking](#11-lambdarank-model-only-ranking)
+12. [Ranking model contract](#12-ranking-model-contract)
+13. [Ranking observability](#13-ranking-observability)
 14. [Catalog and semantic intelligence](#14-catalog-and-semantic-intelligence)
 15. [Interaction ingestion and attribution](#15-interaction-ingestion-and-attribution)
 16. [Persistence model](#16-persistence-model)
@@ -67,7 +67,7 @@ Recommendation Service turns those signals into a bounded and explainable produc
 - guest sessions and authenticated users;
 - seller and admin analytics workflows.
 
-The service keeps Standard Ranking as a deterministic baseline. All candidate sources remain in the pipeline, while AI scoring can be enabled for every request and falls back safely when the model is unavailable.
+Candidate sources create a bounded pool; a trained LambdaRank artifact scores each candidate and diversity rules shape the returned list. If a valid model is unavailable, the recommendation request fails instead of silently using another scoring formula.
 
 ---
 
@@ -104,11 +104,11 @@ The service keeps Standard Ranking as a deterministic baseline. All candidate so
 - co-view, co-cart, and co-purchase candidates;
 - deterministic candidate union and deduplication;
 - diversity constraints by category, brand, and shop;
-- Standard Ranking with explainable feature contributions;
-- optional ML-Hybrid Ranking with fallback;
+- eight documented ranking criteria plus an auxiliary negative signal;
+- LambdaRank-only final scoring;
 - tracking tokens and attribution context;
 - catalog bootstrap and event-based catalog updates;
-- admin analytics, policy management, history, and rollback;
+- admin analytics, read-only model status, and historical policy inspection;
 - replay and retention maintenance workflows.
 
 ### What this service does not own
@@ -119,7 +119,7 @@ The service keeps Standard Ranking as a deterministic baseline. All candidate so
 - payment, order, or shipping state;
 - final frontend presentation;
 - arbitrary SQL access for consumers;
-- a guarantee that the model succeeds on every request; invalid or unavailable AI always falls back to Standard Ranking.
+- a guarantee that a model artifact is always available; the request reports unavailable if the LambdaRank contract cannot be met.
 
 ---
 
@@ -127,18 +127,18 @@ The service keeps Standard Ranking as a deterministic baseline. All candidate so
 
 ### Recommendation Service owns
 
-| Area                    | Responsibility                                                                    |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| Recommendation query    | Build context, generate candidates, rank, diversify, paginate                     |
-| User profile projection | Maintain preference signals from interaction events                               |
-| Session context         | Store recent guest or user activity in Redis                                      |
-| Catalog projection      | Maintain serving-ready product fields locally                                     |
-| Candidate generation    | Combine profile, session, popularity, semantic, and relation sources              |
-| Ranking                 | Standard deterministic score and optional ML blend for every request when enabled |
-| Attribution             | Sign and validate recommendation tracking context                                 |
-| Analytics               | Aggregate impressions, clicks, conversions, and ranking-mode data                 |
-| Embedding jobs          | Dispatch product embedding work and consume generated results                     |
-| Maintenance             | Retention, replay jobs, checkpoints, and admin observability                      |
+| Area                    | Responsibility                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------- |
+| Recommendation query    | Build context, generate candidates, rank, diversify, paginate                                      |
+| User profile projection | Maintain preference signals from interaction events                                                |
+| Session context         | Store recent guest or user activity in Redis                                                       |
+| Catalog projection      | Maintain serving-ready product fields locally                                                      |
+| Candidate generation    | Combine profile, session, popularity, semantic, and relation sources                               |
+| Ranking                 | LambdaRank model-only scoring with an explicit unavailable state when no valid artifact is mounted |
+| Attribution             | Sign and validate recommendation tracking context                                                  |
+| Analytics               | Aggregate impressions, clicks, conversions, and ranking-mode data                                  |
+| Embedding jobs          | Dispatch product embedding work and consume generated results                                      |
+| Maintenance             | Retention, replay jobs, checkpoints, and admin observability                                       |
 
 ### Other services own
 
@@ -176,17 +176,15 @@ The global ValidationPipe rejects unknown DTO fields and transforms bounded quer
 <details>
 <summary><b>Caller permissions and data exposure</b></summary>
 
-| Caller                                            | Allowed operation                                               |
-| ------------------------------------------------- | --------------------------------------------------------------- |
-| Storefront client through Gateway                 | Request recommendations and submit interactions                 |
-| Authenticated user                                | Read personalized recommendations and merge a guest session     |
-| Guest session                                     | Read first-page recommendations and submit session interactions |
-| Internal bootstrap worker                         | Load a catalog snapshot from Product Service                    |
-| Recommendation admin with analytics permission    | Read overview, actors, activity, and ranking performance        |
-| Recommendation admin with policy-read permission  | Read active policy and policy history                           |
-| Recommendation admin with policy-write permission | Create a new ranking policy version                             |
-| Recommendation admin with rollback permission     | Create a rollback policy version                                |
-| AI Service                                        | Receive internal ranking or embedding requests only             |
+| Caller                                           | Allowed operation                                               |
+| ------------------------------------------------ | --------------------------------------------------------------- |
+| Storefront client through Gateway                | Request recommendations and submit interactions                 |
+| Authenticated user                               | Read personalized recommendations and merge a guest session     |
+| Guest session                                    | Read first-page recommendations and submit session interactions |
+| Internal bootstrap worker                        | Load a catalog snapshot from Product Service                    |
+| Recommendation admin with analytics permission   | Read overview, actors, activity, and ranking performance        |
+| Recommendation admin with policy-read permission | Read active policy and policy history                           |
+| AI Service                                       | Receive internal ranking or embedding requests only             |
 
 Serving responses contain product card fields, ranking metadata, source labels, and safe reason codes. They do not expose profile internals, raw event payloads, private tokens, database entities, or model credentials.
 
@@ -262,12 +260,12 @@ A successful interaction response is HTTP 202. It means the event was accepted f
             "reasons": ["similar_to_recent_view"]
         }
     ],
-    "rankingMode": "HYBRID",
-    "rankingModelVersion": null
+    "rankingMode": "AI_MODEL",
+    "rankingModelVersion": "ranking-lambdarank-v2"
 }
 ```
 
-When AI is disabled, unavailable, timed out, or returns a fallback model, the response remains HYBRID and analytics records Standard/Fallback.
+This response is available only when the configured LambdaRank artifact is ready. Otherwise the recommendation endpoint returns an unavailable error; it does not produce a formula-scored list.
 
 ---
 
@@ -299,13 +297,14 @@ npm install
 Copy-Item .env.example .env
 ```
 
-Set database, broker, Redis, Qdrant, internal service, and ranking values. Start with:
+Set database, broker, Redis, Qdrant, internal service, and ranking values. Configure the mounted LambdaRank artifact and its version before testing recommendations:
 
 ```text
-ML_RANKING_ENABLED=true
+RANKING_MODEL_PATH=/mounted/models/ranking-lambdarank-v2.txt
+RANKING_MODEL_VERSION=ranking-lambdarank-v2
 ```
 
-This enables the AI adapter for all requests. If the model is not ready or returns an invalid response, the service automatically falls back to Standard Ranking.
+The model is used for every recommendation request. If AI Service or its artifact is not ready, the request returns unavailable until the model is restored.
 
 > [!IMPORTANT]
 > Recommendation Service stores behavioral events and derived profiles in PostgreSQL, session context and result caches in Redis, and may call Qdrant, Product Service, Auth Service, and AI Service. It also publishes and consumes Kafka events. All of these are server-side connections. To disable recommendation processing, stop the service or disable its deployment. To remove local data, delete only the dedicated development database and Redis logical database after checking that they are not shared.
@@ -334,7 +333,7 @@ npm run start
 +--------------------+                    |                         |
                                           | Query orchestration     |
 +--------------------+       Kafka       | Candidate generation    |
-| Product / Order    | ----------------> | Standard / ML ranking   |
+| Product / Order    | ----------------> | LambdaRank model        |
 | Cart / Auth        |                    | Profile and analytics   |
 +--------------------+                    +-----+-------+-------+---+
                                                 |       |       |
@@ -373,10 +372,9 @@ Request
   -> build exclusions
   -> generate candidates from enabled sources
   -> union and deduplicate candidates
-  -> compute Standard Ranking features
-  -> select AI or Standard mode from the active policy
-  -> request AI scores when AI mode is enabled
-  -> blend AI with Standard Ranking when valid
+  -> compute the 8 criteria and auxiliary negative feature
+  -> request LambdaRank scores for the candidate batch
+  -> fail the recommendation request if the model is unavailable or invalid
   -> apply cold-start mix and diversity limits
   -> paginate the canonical result
   -> issue tracking context and response metadata
@@ -509,147 +507,59 @@ This prevents one noisy source from flooding the entire ranking input.
 
 ---
 
-## 11. Standard Ranking
+## 11. LambdaRank model-only ranking
 
-Standard Ranking is the always-available deterministic baseline. It is the fallback when AI is disabled, not ready, timed out, or invalid. When AI is enabled, every request is attempted with the model.
+Recommendation Service builds one bounded vector per candidate. The eight criteria describe long-term profile affinity, current session intent, semantic similarity, co-behavior, popularity, freshness, quality, and exploration. `negativePenalty` is an auxiliary ninth model input.
 
-### Feature vector
+The exact equations, mathematical properties, citations, and limits of research support are documented in [the eight-criteria proof](../../docs/recommendation/Sở thích trong hồ sơ/01-co-so-toan-hoc-va-nghien-cuu.md).
 
-The baseline computes normalized features:
+### Serving order
 
-| Feature            | Meaning                                             |
-| ------------------ | --------------------------------------------------- |
-| profileAffinity    | Match with product, category, and brand preferences |
-| sessionContext     | Match with recent session intent                    |
-| semanticSimilarity | Similarity contribution from vector retrieval       |
-| coBehavior         | Strength of related view/cart/purchase signals      |
-| popularity         | Product demand and popularity evidence              |
-| freshness          | Recency and catalog freshness                       |
-| quality            | Rating, review, sales, and quality signals          |
-| exploration        | Controlled opportunity to discover new items        |
-| negativePenalty    | Penalty from negative or contradictory signals      |
+1. Candidate sources return a bounded pool; the union removes duplicate products while retaining source attribution.
+2. `RankingFeatureService` computes finite inputs in the fixed feature order documented below.
+3. `RecommendationMlRankingService` sends only item IDs and normalized feature arrays to AI Service.
+4. LambdaRank returns one finite raw relevance score per item. The service rejects missing/duplicate IDs and non-finite scores; it does not clamp predictions or reinterpret them as probabilities.
+5. Candidates are sorted by model score, with stable tie-breakers. Diversity caps then constrain repeated category, brand, or shop before pagination.
 
-### Weighted score
+### Input feature order
 
-The baseline combines the positive features with configured hybrid weights and subtracts the negative penalty. The result is clamped to the range 0 to 1.
+| Position | Feature              |      Range |
+| -------: | -------------------- | ---------: |
+|        1 | `profileAffinity`    |    `[0,1]` |
+|        2 | `sessionContext`     |    `[0,1]` |
+|        3 | `semanticSimilarity` |    `[0,1]` |
+|        4 | `coBehavior`         |    `[0,1]` |
+|        5 | `popularity`         |    `[0,1]` |
+|        6 | `freshness`          |  `[0.1,1]` |
+|        7 | `quality`            |    `[0,1]` |
+|        8 | `exploration`        |    `{0,1}` |
+|        9 | `negativePenalty`    | `[0,0.15]` |
 
-Default hybrid weights:
+Each feature remains an input signal. There is no hand-written weighted sum of the eight criteria in the serving path.
 
-| Feature            | Default weight |
-| ------------------ | -------------: |
-| profileAffinity    |           0.25 |
-| sessionContext     |           0.18 |
-| semanticSimilarity |           0.15 |
-| coBehavior         |           0.10 |
-| popularity         |           0.12 |
-| freshness          |           0.08 |
-| quality            |           0.08 |
-| exploration        |           0.04 |
+### Diversity and pagination
 
-The weights are read through RecommendationRuleService so ranking code does not read ConfigService independently.
+After model sorting, the service applies deterministic category, brand, and seller-shop limits. It builds a canonical result window before pagination so changing `pageSize` does not alter the leading order.
 
-### Diversity
+## 12. Ranking model contract
 
-After scoring, the service applies deterministic diversity limits across:
+AI Service accepts a batch only when every item has exactly nine finite feature values in `[0,1]`. It returns raw finite scores and a model version. The loaded artifact must have objective `lambdarank`, the configured model version, nine features in the expected order, and training metadata declaring monotone increasing `profileAffinity` and monotone decreasing `negativePenalty` constraints.
 
-- category;
-- brand;
-- seller shop.
+Training groups candidates by recommendation `requestId`, uses binary relevance labels, keeps requests wholly inside one split, and requires strict chronological train → validation → test ranges. Validation NDCG@10 selects the early-stopping iteration; test data stays held out. Training/evaluation details and the current evidence status are in [the code and ranking evaluation report](../../docs/recommendation/Sở thích trong hồ sơ/02-kiem-chung-code-va-xep-hang.md).
 
-The canonical result set is ranked with a fixed window and then paginated. This prevents changing pageSize from unexpectedly changing the order of the first items.
+### Failure contract
 
-### Determinism
-
-Tie-breaking uses:
-
-1. score;
-2. number of source contributions;
-3. product ID.
-
-The same inputs, policy version, and catalog snapshot therefore produce a stable order.
-
----
-
-## 12. AI-Enhanced Ranking
-
-AI-Enhanced Ranking adds a model prediction to the Standard Ranking score. It does not replace the baseline.
-
-### Eligibility
-
-AI scoring is attempted for every request when `ML_RANKING_ENABLED` or the active runtime policy enables ML. The AI Service must be reachable, the model must be ready, and the response must contain valid, bounded scores for the requested candidates.
-
-### Feature boundary
-
-Recommendation Service sends a normalized feature vector in a fixed order:
-
-1. profileAffinity;
-2. sessionContext;
-3. semanticSimilarity;
-4. coBehavior;
-5. popularity;
-6. freshness;
-7. quality;
-8. exploration;
-9. negativePenalty.
-
-The AI adapter does not send catalog descriptions or raw user event history. The model receives the feature representation it needs for ranking.
-
-### Blend
-
-For a valid model score:
-
-```text
-final score = standard score * (1 - mlBlend)
-              + ml score * mlBlend
-```
-
-mlBlend is bounded between 0 and 0.5. The score is clamped to 0 through 1.
-
-For example, a blend of 0.30 means Standard Ranking contributes 70% and the model contributes 30%.
-
-### Fallback
-
-If the model:
-
-- is unavailable;
-- times out;
-- reports a fallback model;
-- returns a malformed response;
-- returns duplicate or missing item IDs;
-- returns a score outside the contract;
-
-the request uses the Standard score and response metadata is:
-
-```json
-{
-    "rankingMode": "HYBRID",
-    "rankingModelVersion": null
-}
-```
-
-Fallback requests are recorded as `HYBRID` in attribution analytics, while successful model responses are recorded as `ML_HYBRID`.
-
-### Serving modes
-
-| Variant   | Meaning                                                 |
-| --------- | ------------------------------------------------------- |
-| HYBRID    | Standard deterministic ranking                          |
-| ML_HYBRID | Valid Standard plus AI blend                            |
-| CONTROL   | Historical attribution value retained for old analytics |
+If AI Service is unreachable, no valid artifact is loaded, prediction is malformed, scores are non-finite, or item IDs do not match the request, Recommendation Service returns an unavailable error. It does not use a Standard/Hybrid scoring fallback or attach a false model version to the response. Admin model status distinguishes unreachable service from reachable service without a ready artifact.
 
 ### Response observability
 
-Every recommendation response includes:
+Successful responses include the request ID, strategy, profile state, rule version, `rankingMode: "AI_MODEL"`, and the loaded model version. Legacy `HYBRID` and `ML_HYBRID` values remain accepted only when reading historical attribution data.
 
-- requestId;
-- strategy;
-- profileState;
-- ruleVersion;
-- rankingPolicyVersion;
-- rankingMode;
-- rankingModelVersion.
+## 13. Ranking observability
 
-This makes it possible to verify whether a real request used Standard, valid AI-Hybrid, or fallback without splitting traffic by actor.
+The Admin Recommendation Center exposes read-only ranking status and historical attribution analytics. It shows whether AI Service is reachable, whether a compatible artifact is ready, the model version, and the feature count. It does not tune ranking weights, blend scores, or roll back a formula-based policy.
+
+Request counts and click/cart/purchase events in this dashboard are operational analytics. They are not offline ranking metrics and must not be presented as proof that a formula or model improved ranking quality.
 
 ---
 
@@ -894,8 +804,7 @@ Internal catalog bootstrap. Requires x-internal-service-token and should be run 
 - 400 for invalid query, body, date range, UUID, or pagination;
 - 401 for missing identity or internal token;
 - 403 for missing admin permission;
-- 404 for missing rollback policy version;
-- 503 when an event cannot be accepted by Kafka or a readiness dependency is unavailable.
+- 503 when LambdaRank is unavailable, an event cannot be accepted by Kafka, or a required dependency is unavailable.
 
 ---
 
@@ -916,57 +825,43 @@ Analytics ranges default to the most recent 30 days and are limited to 31 days.
 
 ### Policy endpoints
 
-| Method | Route                                          | Permission                           |
-| ------ | ---------------------------------------------- | ------------------------------------ |
-| GET    | /admin/recommendation/config                   | ADMIN_RECOMMENDATION_POLICY_READ     |
-| PATCH  | /admin/recommendation/config                   | ADMIN_RECOMMENDATION_POLICY_WRITE    |
-| GET    | /admin/recommendation/config/history           | ADMIN_RECOMMENDATION_POLICY_READ     |
-| POST   | /admin/recommendation/config/rollback/:version | ADMIN_RECOMMENDATION_POLICY_ROLLBACK |
+| Method | Route                                | Permission                       |
+| ------ | ------------------------------------ | -------------------------------- |
+| GET    | /admin/recommendation/config         | ADMIN_RECOMMENDATION_POLICY_READ |
+| GET    | /admin/recommendation/config/history | ADMIN_RECOMMENDATION_POLICY_READ |
 
-### Policy fields
+### Read-only model status
 
 ```json
 {
-    "hybridWeights": {
-        "profileAffinity": 0.25,
-        "sessionContext": 0.18,
-        "semanticSimilarity": 0.15,
-        "coBehavior": 0.1,
-        "popularity": 0.12,
-        "freshness": 0.08,
-        "quality": 0.08,
-        "exploration": 0.04
-    },
-    "mlEnabled": true,
-    "mlBlend": 0.3,
-    "reason": "Enable AI ranking for all requests"
+    "rankingMode": "AI_MODEL",
+    "objective": "lambdarank",
+    "version": "ai-lambdarank-profile-v2",
+    "runtime": {
+        "model": {
+            "reachable": true,
+            "ready": true,
+            "modelVersion": "ranking-lambdarank-v2",
+            "featureCount": 9
+        }
+    }
 }
 ```
 
-### Policy rules
+The config endpoint only reports model readiness and candidate-source switches. The history endpoint is for reading archived configuration records; ranking weight updates and policy rollback are not supported.
 
-- Standard Ranking is always enabled;
-- hybrid weight keys are whitelisted;
-- weights cannot be negative and their total must be greater than zero;
-- mlBlend is limited to 0 through 0.5;
-- fields not included in a patch keep their current values;
-- candidate sources are always attempted; ENV master switches remain emergency operational controls;
-- every update creates a new policy version;
-- rollback creates another new version and preserves history;
-- invalid policy input leaves the active policy unchanged.
+Candidate-source ENV switches are operational controls. They do not change the final scorer: every successful request uses LambdaRank.
 
-### Model readiness
+### Model readiness fields
 
-Admin policy status distinguishes:
+The status distinguishes:
 
-- AI policy enabled;
-- AI serving mode for each request;
 - AI Service reachable;
-- model ready;
-- model fallback;
-- effective request mode.
+- compatible artifact loaded;
+- model version and feature count;
+- enabled candidate sources.
 
-Enabling policy does not force AI scoring when the model is not ready. Requests continue with Standard Ranking and expose HYBRID metadata.
+If the artifact is not ready, recommendations return unavailable. Historical `HYBRID`/`ML_HYBRID` attribution values may still appear in analytics.
 
 ---
 
@@ -1130,18 +1025,17 @@ Use [.env.example](./.env.example) as the canonical local template.
 
 ### Profile and ranking
 
-| Variable                                | Purpose                           |
-| --------------------------------------- | --------------------------------- |
-| RECOMMENDATION_RULE_VERSION             | Standard interaction rule version |
-| RECOMMENDATION_PROFILE_HALF_LIFE_DAYS   | Preference decay                  |
-| RECOMMENDATION*WEIGHT*\*                | Interaction weights               |
-| RECOMMENDATION*HYBRID_RANKING_WEIGHT*\* | Standard feature weights          |
-| RECOMMENDATION_TRACKING_SECRET          | Signed attribution secret         |
-| ML_RANKING_ENABLED                      | Enable ML adapter                 |
-| ML_RANKING_BLEND                        | AI influence from 0 to 0.5        |
-| ML_RANKING_POLICY_VERSION               | ML cache/trace version            |
-| ML_RANKING_TIMEOUT_MS                   | AI request budget                 |
-| RECOMMENDATION_POLICY_SYNC_INTERVAL_MS  | Policy polling interval           |
+| Variable                               | Purpose                                                                                                       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| RECOMMENDATION_RANKING_POLICY_VERSION  | Ranking/cache contract version                                                                                |
+| RECOMMENDATION_PROFILE_HALF_LIFE_DAYS  | Must remain `7`; other values are rejected because stored aggregates require replay before changing half-life |
+| RECOMMENDATION_PROFILE_*_WEIGHT        | Product/category/brand profile mix                                                                            |
+| RECOMMENDATION_PROFILE_*_SCALE         | Profile dimension normalization                                                                               |
+| RECOMMENDATION*WEIGHT*\*               | Interaction weights                                                                                           |
+| RECOMMENDATION_TRACKING_SECRET         | Signed attribution secret                                                                                     |
+| AI_SERVICE_URL                         | Internal AI Service URL                                                                                       |
+| ML_RANKING_TIMEOUT_MS                  | AI ranking request budget                                                                                     |
+| RECOMMENDATION_POLICY_SYNC_INTERVAL_MS | Policy polling interval                                                                                       |
 
 ### Maintenance
 
@@ -1154,7 +1048,7 @@ Use [.env.example](./.env.example) as the canonical local template.
 | RECOMMENDATION_REPLAY_JOB_RETENTION_DAYS    | Replay job retention    |
 | REPLAY_MAX_ATTEMPTS                         | Replay attempt limit    |
 
-Infrastructure credentials and model endpoints remain environment-owned. Admin policy can change ranking behavior, but it cannot change internal tokens, Qdrant connection details, model paths, or candidate-source emergency switches.
+Infrastructure credentials and model endpoints remain environment-owned. Admin can inspect model status and historical policy records, but cannot change ranking behavior, model paths, internal tokens, or candidate-source emergency switches.
 
 ---
 
@@ -1178,15 +1072,14 @@ npm run start
 3. Start Qdrant if semantic candidates or embeddings are enabled.
 4. Start Product Service and the internal Auth/Gateway dependencies.
 5. Copy .env.example to .env.
-6. Keep AI ranking disabled while validating the baseline.
-7. Start Recommendation Service.
-8. Verify live and ready health endpoints.
+6. Mount a LambdaRank artifact whose version/schema match AI Service configuration.
+7. Verify AI Service reports a ready model before testing recommendation serving.
+8. Start Recommendation Service and verify live/ready health endpoints.
 9. Run catalog bootstrap once for an empty catalog projection.
 10. Produce interaction and catalog events.
 11. Request recommendations for a guest UUID v4 session.
 12. Log in and test profile merge.
-13. Inspect response rankingMode, policy version, reasons, and model metadata.
-14. Enable AI after AI Service status and model readiness are confirmed; every request will then be attempted with AI.
+13. Inspect `rankingMode: AI_MODEL`, policy version, reasons, and model metadata.
 
 ### Swagger
 
@@ -1209,8 +1102,8 @@ Cover:
 - source enable/disable rules;
 - candidate deduplication and source coverage;
 - exclusion of anchor and previously seen items;
-- Standard Ranking feature normalization;
-- weight calculation and score clamping;
+- feature normalization and score bounds;
+- LambdaRank-only serving and unavailable-model behavior;
 - negative penalty;
 - cold-start source quotas;
 - category, brand, and shop diversity;
@@ -1233,31 +1126,20 @@ Cover:
 
 Cover:
 
-- ML disabled does not call AI Service;
-- AI disabled always serves HYBRID;
-- AI enabled attempts ML_HYBRID for every actor;
-- blend stays between 0 and 0.5;
-- AI timeout falls back to Standard;
-- invalid scores fall back to Standard;
-- fallback model is not recorded as AI ranking;
-- response metadata is correct for HYBRID and ML_HYBRID;
+- every successful request calls AI Service;
+- unavailable model or invalid output fails the request;
+- response metadata reports `AI_MODEL` and the loaded version;
+- finite raw score ordering is preserved;
 - model feature order contains all nine features.
 
 ### Admin policy tests
 
 Cover:
 
-- active default policy when no database policy exists;
-- legacy policy fields receive safe defaults;
-- partial PATCH keeps omitted values;
-- negative or unknown weights are rejected;
-- zero total weight is rejected;
-- invalid blend is rejected;
-- Standard cannot be disabled;
-- candidate sources default to enabled and can only be locked by environment master switches;
-- every update creates a new version;
-- rollback creates a new version without rewriting history;
-- policy cache invalidates after update.
+- model status shows readiness, reachability, version and feature count;
+- config/history endpoints remain read-only;
+- candidate-source switches match environment controls;
+- legacy policy history does not alter the serving algorithm.
 
 ### Integration and E2E
 
@@ -1268,9 +1150,8 @@ Use real or test instances of PostgreSQL, Kafka, Redis, Qdrant, and AI Service s
 - relation and embedding consumers;
 - cache invalidation;
 - recommendation response metadata;
-- admin policy update and rollback;
-- AI on/off behavior for every request and Standard fallback when unavailable;
-- fallback when AI Service is unavailable.
+- admin model status and read-only policy history;
+- LambdaRank scoring and unavailable behavior when AI Service is unavailable.
 
 ### Commands
 
@@ -1323,8 +1204,8 @@ Track:
 - empty-result rate;
 - strategy distribution;
 - candidate source contribution and failure rate;
-- Standard versus ML-Hybrid response count;
-- AI timeout, invalid-response, and fallback count;
+- successful `AI_MODEL` response count;
+- model unavailable, timeout, and invalid-response count;
 - model readiness and model version;
 - cache hit/miss and invalidation rate;
 - interaction publish and consumer lag;
@@ -1332,23 +1213,22 @@ Track:
 - catalog checkpoint age and event lag;
 - embedding job success, lease expiry, and DLQ count;
 - replay success and retention batch duration;
-- admin policy changes and rollback frequency.
+- model-status checks and historical attribution modes.
 
 ### Safe rollout
 
-1. Deploy code with ML ranking disabled.
-2. Confirm Standard Ranking, candidate sources, catalog projection, and tracking.
-3. Verify AI Service health and model artifact status.
-4. Enable the policy and verify that every request reports either ML_HYBRID or HYBRID according to the actual model result.
-5. Compare latency, fallback rate, click-through, conversion, and error metrics.
-6. If the model is unhealthy, disable ML; requests immediately use Standard.
-7. Roll back the policy when a known previous configuration is safer.
+1. Validate the LambdaRank artifact on held-out data before deployment.
+2. Confirm candidate sources, catalog projection, profile feature tests, and tracking.
+3. Verify AI Service health and exact model version/schema.
+4. Start recommendation traffic only after Admin reports the artifact ready.
+5. Monitor latency, unavailable errors, exposure/click attribution, and model version.
+6. If the model is unhealthy, remove recommendation traffic until a validated artifact is restored; the service does not switch scorers.
 
 ### Multi-instance behavior
 
 - instances share PostgreSQL, Redis, Qdrant, and Kafka;
 - interaction consumers use stable consumer groups;
-- runtime policy sync propagates active policy changes across instances;
+- runtime policy sync propagates the active cache/attribution contract version across instances;
 - versioned cache keys prevent old ranking results from being reused;
 - do not flush all Redis for a policy update;
 - old cache entries expire naturally;
@@ -1360,24 +1240,23 @@ When recommendation quality or availability drops:
 
 1. inspect health and consumer lag;
 2. check candidate-source and Qdrant errors;
-3. confirm active policy and model status;
-4. disable ML if AI is involved;
-5. verify HYBRID responses and fallback analytics;
-6. inspect cache and catalog projection freshness;
-7. replay only the affected derived topic or job;
-8. use policy rollback when the configuration itself is the cause.
+3. confirm model version and artifact status;
+4. stop recommendation traffic while the model is unavailable;
+5. inspect cache and catalog projection freshness;
+6. replay only the affected derived topic or job;
+7. restore traffic after artifact and schema validation.
 
 ---
 
 ## 27. FAQ
 
-### Does AI replace Standard Ranking?
+### What happens if the LambdaRank model is unavailable?
 
-No. Standard Ranking is always the baseline and fallback. AI contributes a bounded blend for every request when enabled and the model response passes validation.
+Recommendation returns an unavailable response. It does not create a list with a formula scorer or mark a fallback as a model result. Restore a validated artifact before sending recommendation traffic.
 
-### Why does the response say HYBRID when AI is enabled in Admin?
+### Why does an old event say HYBRID or ML_HYBRID?
 
-The model can be unavailable, time out, or return an invalid prediction. Inspect rankingMode and rankingModelVersion; the response reports HYBRID when it falls back.
+Those values are accepted only for historical attribution. Successful recommendations from the current serving path report `AI_MODEL` with the loaded model version.
 
 ### Why is a guest unable to request page two?
 
@@ -1389,19 +1268,19 @@ Recommendation uses a local catalog projection. The product must arrive through 
 
 ### What happens when Qdrant is down?
 
-Semantic candidates are skipped for the affected request. Other sources and Standard Ranking continue to serve when enough candidates remain.
+Semantic candidates are skipped for the affected request. If another source provides candidates and LambdaRank is ready, the model still ranks them.
 
 ### What happens when Redis is down?
 
-Session context or result-cache reads may be degraded, but durable profile and catalog data remain in PostgreSQL. The request falls back according to the available context.
+Session context or result-cache reads may be degraded, but durable profile and catalog data remain in PostgreSQL. Candidate generation may use the remaining available context; final scoring still requires LambdaRank.
 
 ### Can Admin change AI service URL or model path?
 
 No. Those are infrastructure settings owned by deployment configuration. Admin controls ranking policy; candidate sources are controlled only by operational ENV switches.
 
-### Can a policy update make the system AI-only?
+### Can Admin edit ranking weights or the model path?
 
-No. The policy contract does not expose a Standard toggle or AI-only mode. The final runtime always has Standard Ranking available.
+No. Admin only reads model readiness and archived policy history. Model path/version are deployment configuration, and final scoring always uses LambdaRank.
 
 ### Is a 202 interaction response proof that the profile has updated?
 
@@ -1409,7 +1288,7 @@ No. It confirms that Kafka accepted the event. Projection, relation, popularity,
 
 ### Can an old policy be edited in place?
 
-No. Updates and rollbacks create new policy versions. The history remains available for audit and recovery.
+No. Legacy policy history is read-only and retained for audit; the current admin API does not update or roll back those scoring rules.
 
 ---
 
@@ -1429,4 +1308,4 @@ Software Engineer responsible for the architecture, implementation, integration,
 
 **Đào Ngọc Anh**
 
-Designed the recommendation serving pipeline, profile projection, candidate sources, deterministic Standard Ranking, safe AI fallback, attribution boundary, catalog intelligence, and admin policy workflow for the Bin E-Commerce ecosystem.
+Designed the recommendation serving pipeline, profile projection, candidate sources, LambdaRank model-only scoring, attribution boundary, catalog intelligence, and read-only model observability for the Bin E-Commerce ecosystem.

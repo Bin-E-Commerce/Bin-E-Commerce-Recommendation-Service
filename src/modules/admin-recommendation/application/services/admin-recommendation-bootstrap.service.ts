@@ -1,4 +1,4 @@
-// Bootstrap này nạp policy active từ DB vào rule runtime khi service khởi động; không có record thì giữ env/default.
+// Bootstrap chỉ đồng bộ version lịch sử vào cache/attribution; policy cũ không còn điều khiển model ranking.
 
 import {
     Injectable,
@@ -25,7 +25,7 @@ export class AdminRecommendationBootstrapService
         private readonly config: ConfigService,
     ) {}
 
-    // Nạp policy trước khi request đầu tiên đến; lỗi DB vẫn để rule env hoạt động qua lifecycle TypeORM retry.
+    // Nạp version active trước request đầu tiên; lỗi DB vẫn để version cấu hình môi trường hoạt động.
     async onModuleInit(): Promise<void> {
         await this.syncActivePolicy();
         const intervalMs = this.readIntervalMs();
@@ -41,7 +41,7 @@ export class AdminRecommendationBootstrapService
         if (this.timer) clearInterval(this.timer);
     }
 
-    // Poll nhẹ theo version để các instance khác nhận policy mới mà không cần restart hoặc đọc DB trong request recommendation.
+    // Poll version để các instance dùng cùng cache namespace; các field weight cũ bị bỏ qua hoàn toàn.
     private async syncActivePolicy(): Promise<void> {
         try {
             const active = await this.repository.findActivePolicy();
@@ -52,16 +52,8 @@ export class AdminRecommendationBootstrapService
             }
             if (active.version === this.rules.getPolicySnapshot().version)
                 return;
-            const config = active.config as {
-                hybridWeights?: Record<string, number>;
-                mlEnabled?: boolean;
-                mlBlend?: number;
-            };
             this.rules.setRuntimePolicy({
                 version: active.version,
-                hybridWeights: config.hybridWeights,
-                mlEnabled: config.mlEnabled,
-                mlBlend: config.mlBlend,
             });
         } catch (error) {
             // Policy đang chạy vẫn hợp lệ; lần poll kế tiếp sẽ tự retry khi DB tạm thời unavailable.

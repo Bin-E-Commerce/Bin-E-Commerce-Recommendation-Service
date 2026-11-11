@@ -13,7 +13,7 @@ export interface RecommendationTrackingTokenInput {
     source: string;
     surface: 'home' | 'product_detail' | 'recommendations_page';
     policyVersion: string;
-    rankingMode: 'HYBRID' | 'ML_HYBRID';
+    rankingMode: 'AI_MODEL' | 'HYBRID' | 'ML_HYBRID';
 }
 
 @Injectable()

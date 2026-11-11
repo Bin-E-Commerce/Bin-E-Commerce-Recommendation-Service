@@ -1,25 +1,14 @@
-// File này là facade ranking cho Recommendation Service; Standard dùng Hybrid deterministic, AI chỉ là lớp blend tùy chọn.
-// Candidate generation không nằm trong file này; service chỉ chấm điểm, diversity và trả kết quả deterministic.
+// File này chỉ dùng AI model score để xếp candidate; diversity là ràng buộc danh sách sau xếp hạng.
+// Không có phép cộng trọng số Standard hay nhánh fallback trong serving path.
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
-import {
-    RecommendationRuleService,
-    type HybridRankingWeights,
-} from '@/modules/profiles/application/services/rules/recommendation-rule.service';
+import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 import type {
-    PreferenceValue,
-    SessionContext,
-} from '@/modules/profiles/application/types/profile.types';
-import type {
-    RecommendationStrategy,
     RecommendationSurface,
 } from '@/modules/recommendation/application/types/recommendation.types';
-import { RankingFeatureService } from '@/modules/recommendation/application/services/ranking/features/ranking-feature.service';
-import type { RankingPreferenceLookup } from '@/modules/recommendation/application/services/ranking/features/ranking-feature.service';
 import type {
     RankedCandidate,
-    RankingMode,
     RankingFeatureVector,
     RecommendationCandidate,
 } from '@/modules/recommendation/application/types/ranking/ranking.types';
@@ -28,172 +17,42 @@ const RESULT_SET_LIMIT = 180;
 
 @Injectable()
 export class RecommendationRankingService {
-    constructor(
-        private readonly rules: RecommendationRuleService,
-        private readonly features: RankingFeatureService,
-    ) {}
+    constructor(private readonly rules: RecommendationRuleService) {}
 
-    // Giữ trường ruleVersion trong response để tương thích API, nhưng version mới phản ánh Standard Ranking.
-    getRuleVersion(): string {
+    // Version đi vào cache key và attribution để phân biệt model/policy đã tạo response.
+    getPolicyVersion(): string {
         return this.rules.getRuleVersion();
     }
 
-    // Tách cache theo Standard và AI-Enhanced để không dùng lẫn kết quả từ hai mode.
-    getPolicyVersion(mode: RankingMode): string {
-        if (mode === 'ML_HYBRID') return this.rules.getMlRankingPolicyVersion();
-        return this.rules.getHybridPolicyVersion();
-    }
-
-    // Expose ML flag qua ranking facade để query orchestration không phụ thuộc ConfigService.
-    isMlRankingEnabled(): boolean {
-        return this.rules.isMlRankingEnabled();
-    }
-
-    // Trả snapshot policy để query trace không cần đọc ConfigService trực tiếp.
-    getPolicySnapshot(): ReturnType<
-        RecommendationRuleService['getPolicySnapshot']
-    > {
-        return this.rules.getPolicySnapshot();
-    }
-
-    // Standard luôn dùng feature Hybrid deterministic; AI-Enhanced chỉ blend thêm prediction hợp lệ.
+    // Mỗi candidate phải có một raw score hữu hạn từ model; batch thiếu hoặc sai thì không phát danh sách giả.
     rank(
         candidates: RecommendationCandidate[],
-        products: PreferenceValue[],
-        categories: PreferenceValue[],
-        brands: PreferenceValue[],
-        context: SessionContext | null,
-        strategy: RecommendationStrategy,
-        options: {
-            mode?: RankingMode;
-            surface?: RecommendationSurface;
-            mlScores?: ReadonlyMap<string, number>;
-            mlFeatures?: ReadonlyMap<string, RankingFeatureVector>;
-        } = {},
+        scores: ReadonlyMap<string, number>,
+        features: ReadonlyMap<string, RankingFeatureVector>,
+        surface: RecommendationSurface = 'home',
     ): RankedCandidate[] {
-        const mode = options.mode ?? 'HYBRID';
-        const surface = options.surface ?? 'home';
-        // Tạo lookup một lần cho cả batch; ranker không cần quét lại ba mảng preference cho từng product.
-        const preferences = this.createPreferenceLookup(
-            products,
-            categories,
-            brands,
-        );
-        const hybridWeights = this.rules.getHybridRankingWeights();
+        if (candidates.length === 0) return [];
         const ranked = candidates
-            .map((candidate) =>
-                mode === 'ML_HYBRID'
-                    ? this.scoreMlHybrid(
-                          candidate,
-                          products,
-                          categories,
-                          brands,
-                          context,
-                          preferences,
-                          options.mlScores,
-                          options.mlFeatures?.get(candidate.product.productId),
-                          hybridWeights,
-                      )
-                    : this.scoreHybrid(
-                          candidate,
-                          products,
-                          categories,
-                          brands,
-                          context,
-                          preferences,
-                          undefined,
-                          hybridWeights,
-                      ),
-            )
+            .map((candidate) => {
+                const productId = candidate.product.productId;
+                const score = scores.get(productId);
+                // Reject thiếu/NaN score thay vì âm thầm thay bằng một công thức khác.
+                if (score === undefined || !Number.isFinite(score)) {
+                    throw new ServiceUnavailableException(
+                        'RANKING_MODEL_RETURNED_INCOMPLETE_SCORES',
+                    );
+                }
+                return {
+                    ...candidate,
+                    score,
+                    features: features.get(productId),
+                };
+            })
             .sort(this.compareCandidates);
-        const mixed =
-            strategy === 'COLD_START' ? this.applyColdStartMix(ranked) : ranked;
-        return this.applyDiversity(mixed, surface).slice(0, RESULT_SET_LIMIT);
+        return this.applyDiversity(ranked, surface).slice(0, RESULT_SET_LIMIT);
     }
 
-    // Tính điểm Standard từ feature đã chuẩn hóa; feature thiếu nhận 0 để candidate cùng thang điểm.
-    private scoreHybrid(
-        candidate: RecommendationCandidate,
-        products: PreferenceValue[],
-        categories: PreferenceValue[],
-        brands: PreferenceValue[],
-        context: SessionContext | null,
-        preferences: RankingPreferenceLookup,
-        precomputedFeatures?: RankingFeatureVector,
-        weights: HybridRankingWeights = this.rules.getHybridRankingWeights(),
-    ): RankedCandidate {
-        const features =
-            precomputedFeatures ??
-            this.features.build(
-                candidate,
-                products,
-                categories,
-                brands,
-                context,
-                preferences,
-            );
-        const score =
-            (Object.keys(weights) as Array<keyof typeof weights>).reduce(
-                (sum, key) => sum + weights[key] * features[key],
-                0,
-            ) - features.negativePenalty;
-        return {
-            ...candidate,
-            score: Math.max(0, Math.min(1, score)),
-            features,
-        };
-    }
-
-    // Blend ML score tối đa theo policy với Hybrid deterministic; thiếu prediction thì giữ nguyên Hybrid score.
-    private scoreMlHybrid(
-        candidate: RecommendationCandidate,
-        products: PreferenceValue[],
-        categories: PreferenceValue[],
-        brands: PreferenceValue[],
-        context: SessionContext | null,
-        preferences: RankingPreferenceLookup,
-        mlScores?: ReadonlyMap<string, number>,
-        mlFeatures?: RankingFeatureVector,
-        weights?: HybridRankingWeights,
-    ): RankedCandidate {
-        const baseline = this.scoreHybrid(
-            candidate,
-            products,
-            categories,
-            brands,
-            context,
-            preferences,
-            mlFeatures,
-            weights,
-        );
-        const mlScore = mlScores?.get(candidate.product.productId);
-        if (mlScore === undefined || !Number.isFinite(mlScore)) return baseline;
-        const blend = this.rules.getMlRankingBlend();
-        return {
-            ...baseline,
-            score: Math.min(
-                1,
-                Math.max(0, baseline.score * (1 - blend) + mlScore * blend),
-            ),
-        };
-    }
-
-    // Chuyển preference arrays thành map một lần để ranking có độ phức tạp gần O(candidate count).
-    private createPreferenceLookup(
-        products: PreferenceValue[],
-        categories: PreferenceValue[],
-        brands: PreferenceValue[],
-    ): RankingPreferenceLookup {
-        return {
-            product: new Map(products.map((item) => [item.dimensionKey, item])),
-            category: new Map(
-                categories.map((item) => [item.dimensionKey, item]),
-            ),
-            brand: new Map(brands.map((item) => [item.dimensionKey, item])),
-        };
-    }
-
-    // Diversity chạy theo cửa sổ surface cố định để pageSize request khác nhau không làm thay đổi ranking canonical.
+    // Diversity giữ ràng buộc category/brand/shop mà không thay model score của từng sản phẩm.
     private applyDiversity(
         items: RankedCandidate[],
         surface: RecommendationSurface,
@@ -208,7 +67,7 @@ export class RecommendationRankingService {
         return output;
     }
 
-    // Greedy pass quét toàn bộ phần còn lại để kéo item đa dạng ở rank thấp lên trước khi buộc phải relax quota.
+    // Ưu tiên item trong thứ tự model thỏa quota; lượt hai nới quota để không bỏ candidate hợp lệ.
     private diversifyWindow(
         remaining: RankedCandidate[],
         windowSize: number,
@@ -251,7 +110,7 @@ export class RecommendationRankingService {
         return selected;
     }
 
-    // Kiểm tra quota category/brand/shop ở strict pass mà không loại bỏ item hợp lệ khỏi result set.
+    // Quota kiểm tra riêng từng chiều; product không bị loại vì lượt hai luôn cho phép relax.
     private canAdd(
         product: RecommendationCatalogProduct,
         counts: {
@@ -271,7 +130,7 @@ export class RecommendationRankingService {
         );
     }
 
-    // Cập nhật counter sau mỗi lựa chọn để diversity invariant không phụ thuộc vào source candidate.
+    // Tăng counter sau mỗi lần nhận để quota có hiệu lực xuyên suốt cửa sổ diversity.
     private addCounts(
         product: RecommendationCatalogProduct,
         counts: {
@@ -292,44 +151,7 @@ export class RecommendationRankingService {
         }
     }
 
-    // Cold-start giữ quota source cũ trước khi diversity pass để guest vẫn có mix trending/newest/explore ổn định.
-    private applyColdStartMix(items: RankedCandidate[]): RankedCandidate[] {
-        const quotas: Array<[string, number]> = [
-            ['TRENDING', 72],
-            ['NEWEST', 54],
-            ['BEST_SELLING', 36],
-            ['EXPLORE', 18],
-        ];
-        const selected = new Set<string>();
-        const output: RankedCandidate[] = [];
-        for (const [source, quota] of quotas) {
-            let sourceCount = 0;
-            for (const item of items) {
-                if (
-                    output.length >= RESULT_SET_LIMIT ||
-                    sourceCount >= quota ||
-                    selected.has(item.product.productId) ||
-                    !item.sources.has(source)
-                )
-                    continue;
-                selected.add(item.product.productId);
-                output.push(item);
-                sourceCount += 1;
-            }
-        }
-        for (const item of items) {
-            if (
-                output.length >= RESULT_SET_LIMIT ||
-                selected.has(item.product.productId)
-            )
-                continue;
-            selected.add(item.product.productId);
-            output.push(item);
-        }
-        return output;
-    }
-
-    // Tie-breaker deterministic giúp cache và pagination không thay đổi giữa hai request cùng snapshot.
+    // Tie-breaker ổn định giúp cache và pagination giữ thứ tự khi model trả score bằng nhau.
     private compareCandidates(
         left: RankedCandidate,
         right: RankedCandidate,

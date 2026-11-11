@@ -13,7 +13,7 @@ export class RelationCandidateService {
         private readonly rules: RecommendationRuleService,
     ) {}
 
-    // Lấy target từ recent/profile anchors để bổ sung candidate cho Standard Ranking.
+    // Lấy target từ recent/profile anchors để bổ sung candidate cho vector LambdaRank.
     async findCandidates(
         anchorProductIds: string[],
         excludeProductIds: string[],

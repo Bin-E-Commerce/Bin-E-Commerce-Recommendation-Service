@@ -13,15 +13,9 @@ export interface RecommendationActorQuery extends RecommendationAnalyticsQuery {
     actorIds?: string[];
 }
 
-export interface RecommendationPolicyConfig {
-    hybridWeights: Record<string, number>;
-    mlEnabled: boolean;
-    mlBlend: number;
-}
-
 export interface RecommendationPolicyRuntimeStatus {
-    standardEnabled: true;
-    aiPolicyEnabled: boolean;
+    rankingMode: 'AI_MODEL';
+    objective: 'lambdarank';
     candidateSources: {
         semanticEnabled: boolean;
         coBehaviorEnabled: boolean;
@@ -32,7 +26,6 @@ export interface RecommendationPolicyRuntimeStatus {
     model: {
         reachable: boolean;
         ready: boolean;
-        fallback: boolean;
         modelVersion: string | null;
         featureCount: number | null;
     };

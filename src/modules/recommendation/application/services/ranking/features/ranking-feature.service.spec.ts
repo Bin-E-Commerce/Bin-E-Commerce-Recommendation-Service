@@ -267,5 +267,228 @@ describe('RankingFeatureService', () => {
             expect(result.profileAffinity).toBeCloseTo(0.8);
             expect(result.profileAffinity).toBeLessThanOrEqual(1);
         });
+
+        // Session signal phải đúng tổng trọng số của ba phép khớp và bằng 0 khi thiếu context.
+        it('should compute session context from category, brand, and anchor matches', () => {
+            const context = {
+                sessionId: 'session-1',
+                recentProductIds: [],
+                recentCategoryIds: ['category-1'],
+                recentBrandIds: ['brand-1'],
+                currentProductId: 'anchor-1',
+                currentCategoryId: null,
+                latestQuery: null,
+                cartProductIds: [],
+                intentUpdatedAt: '2026-11-09T00:00:00.000Z',
+                version: 1,
+            };
+            const candidate = createCandidate([
+                {
+                    source: 'SEMANTIC_SIMILARITY',
+                    rawScore: 0.5,
+                    reasonCode: 'SIMILAR',
+                    anchorProductId: 'anchor-1',
+                },
+            ]);
+
+            const result = target.build(candidate, [], [], [], context);
+
+            expect(result.sessionContext).toBeCloseTo(1);
+            expect(
+                target.build(candidate, [], [], [], null).sessionContext,
+            ).toBe(0);
+        });
+
+        // Semantic feature chỉ nhận semantic contribution và giới hạn raw similarity vào [0, 1].
+        it('should normalize semantic similarity and ignore unrelated sources', () => {
+            const candidate = createCandidate([
+                {
+                    source: 'SEMANTIC_SIMILARITY',
+                    rawScore: 1.4,
+                    reasonCode: 'SIMILAR',
+                },
+                {
+                    source: 'TRENDING',
+                    rawScore: 0.95,
+                    reasonCode: 'POPULAR',
+                },
+            ]);
+
+            const result = target.build(candidate, [], [], [], null);
+
+            expect(result.semanticSimilarity).toBe(1);
+        });
+
+        // Co-behavior dùng hàm tăng bão hòa, không âm và không vượt một.
+        it('should keep co-behavior monotonic and bounded', () => {
+            const zero = target.build(
+                createCandidate([
+                    {
+                        source: 'CO_BEHAVIOR',
+                        rawScore: 0,
+                        reasonCode: 'CO_VIEW',
+                        relationType: 'CO_VIEW',
+                    },
+                ]),
+                [],
+                [],
+                [],
+                null,
+            );
+            const larger = target.build(
+                createCandidate([
+                    {
+                        source: 'CO_BEHAVIOR',
+                        rawScore: 9,
+                        reasonCode: 'CO_VIEW',
+                        relationType: 'CO_VIEW',
+                    },
+                ]),
+                [],
+                [],
+                [],
+                null,
+            );
+
+            expect(zero.coBehavior).toBe(0);
+            expect(larger.coBehavior).toBeGreaterThan(zero.coBehavior);
+            expect(larger.coBehavior).toBeLessThan(1);
+        });
+
+        // Popularity lấy tín hiệu lớn hơn giữa doanh số log-scale và vị trí source hợp lệ.
+        it('should normalize popularity and ignore source rank without its list size', () => {
+            const ranked = target.build(
+                createCandidate([
+                    {
+                        source: 'TRENDING',
+                        rawScore: 0,
+                        reasonCode: 'TRENDING',
+                        sourceRank: 2,
+                        sourceSize: 5,
+                    },
+                ]),
+                [],
+                [],
+                [],
+                null,
+            );
+            const missingListSize = target.build(
+                createCandidate([
+                    {
+                        source: 'TRENDING',
+                        rawScore: 0,
+                        reasonCode: 'TRENDING',
+                        sourceRank: 1,
+                    },
+                ]),
+                [],
+                [],
+                [],
+                null,
+            );
+
+            expect(ranked.popularity).toBeCloseTo(0.75);
+            expect(missingListSize.popularity).toBeCloseTo(
+                Math.log1p(10) / 12,
+            );
+        });
+
+        // Freshness không tăng khi tuổi sản phẩm lớn hơn; các mốc bucket cố định phải khớp code.
+        it('should assign freshness by the documented age buckets', () => {
+            const now = new Date('2026-11-09T00:00:00.000Z');
+            const freshCandidate = createCandidate([]);
+            freshCandidate.product.createdAt = new Date(
+                now.getTime() - 1 * 86_400_000,
+            );
+            const oldCandidate = createCandidate([]);
+            oldCandidate.product.createdAt = new Date(
+                now.getTime() - 31 * 86_400_000,
+            );
+
+            const fresh = target.build(
+                freshCandidate,
+                [],
+                [],
+                [],
+                null,
+                undefined,
+                now,
+            );
+            const old = target.build(
+                oldCandidate,
+                [],
+                [],
+                [],
+                null,
+                undefined,
+                now,
+            );
+
+            expect(fresh.freshness).toBe(1);
+            expect(old.freshness).toBe(0.3);
+            expect(fresh.freshness).toBeGreaterThan(old.freshness);
+        });
+
+        // Quality gồm ba đầu vào chuẩn hóa; sản phẩm đạt cực đại chỉ khi từng thành phần đạt cực đại.
+        it('should combine normalized rating, review confidence, and availability', () => {
+            const candidate = createCandidate([]);
+
+            const result = target.build(candidate, [], [], [], null);
+
+            expect(result.quality).toBe(1);
+        });
+
+        // Exploration là cờ nhị phân có điều kiện, không khuyến khích candidate khi profile đã mạnh.
+        it('should enable exploration only for weak profile affinity', () => {
+            const candidate = createCandidate([]);
+            candidate.sources.add('EXPLORE');
+            const strongPreference = createPreference(
+                'PRODUCT',
+                'product-1',
+                8,
+                0,
+                new Date('2026-11-09T00:00:00.000Z'),
+            );
+            const referenceTime = new Date('2026-11-09T00:00:00.000Z');
+
+            expect(
+                target.build(candidate, [], [], [], null).exploration,
+            ).toBe(1);
+            expect(
+                target.build(
+                    candidate,
+                    [strongPreference],
+                    [],
+                    [],
+                    null,
+                    undefined,
+                    referenceTime,
+                ).exploration,
+            ).toBe(0);
+        });
+
+        // Từng feature tạo cho LambdaRank phải là số hữu hạn trong miền huấn luyện [0, 1].
+        it('should keep all model input features finite and bounded', () => {
+            const result = target.build(
+                createCandidate([
+                    {
+                        source: 'SEMANTIC_SIMILARITY',
+                        rawScore: Number.POSITIVE_INFINITY,
+                        reasonCode: 'SIMILAR',
+                    },
+                ]),
+                [],
+                [],
+                [],
+                null,
+            );
+
+            expect(Object.values(result).every(Number.isFinite)).toBe(true);
+            expect(
+                Object.values(result).every(
+                    (value) => value >= 0 && value <= 1,
+                ),
+            ).toBe(true);
+        });
     });
 });

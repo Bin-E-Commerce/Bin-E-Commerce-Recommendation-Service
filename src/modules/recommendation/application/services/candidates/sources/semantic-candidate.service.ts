@@ -5,7 +5,7 @@ import { CatalogService } from '@/modules/catalog/application/services/catalog/c
 import { VectorIndexService } from '@/modules/catalog/application/services/vector/vector-index.service';
 import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 
-// Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để Standard Ranking tiếp tục với nguồn khác.
+// Source semantic chỉ bổ sung candidate pool; mọi lỗi Qdrant trả [] để các source khác tiếp tục chạy.
 @Injectable()
 export class SemanticCandidateService {
     constructor(

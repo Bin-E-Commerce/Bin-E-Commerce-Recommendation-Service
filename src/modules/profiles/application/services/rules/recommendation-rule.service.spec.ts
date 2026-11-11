@@ -18,7 +18,8 @@ describe('RecommendationRuleService', () => {
                 (key: string, fallback?: string) =>
                     ({
                         RECOMMENDATION_WEIGHT_PRODUCT_CLICKED: '3',
-                        RECOMMENDATION_RULE_VERSION: 'phase2-rule-test',
+                        RECOMMENDATION_RANKING_POLICY_VERSION:
+                            'ai-lambdarank-test-v1',
                     })[key] ?? fallback,
             ),
         } as unknown as ConfigService;
@@ -30,17 +31,31 @@ describe('RecommendationRuleService', () => {
 
         // Assert
         expect(weight).toBe(3);
-        expect(version).toBe('phase2-rule-test');
+        expect(version).toBe('ai-lambdarank-test-v1');
     });
 
-    it('should use safe defaults for invalid half-life configuration', () => {
+    // Half-life đã được dùng để ghi aggregate nên đổi ENV phải dừng service cho đến khi phát lại lịch sử.
+    it('should reject a changed or invalid half-life configuration', () => {
         // Arrange
         const config = {
-            get: jest.fn((key: string, fallback?: string) =>
+            get: jest.fn((key: string) =>
                 key === 'RECOMMENDATION_PROFILE_HALF_LIFE_DAYS'
-                    ? 'invalid'
-                    : fallback,
+                    ? '14'
+                    : undefined,
             ),
+        } as unknown as ConfigService;
+
+        // Act & Assert
+        expect(() => new RecommendationRuleService(config)).toThrow(
+            'PROFILE_HALF_LIFE_CHANGE_REQUIRES_PROFILE_REPLAY',
+        );
+    });
+
+    // Không khai báo override vẫn dùng đúng half-life cố định đã dùng cho projection mới.
+    it('should use the pinned seven-day half-life when no override is set', () => {
+        // Arrange
+        const config = {
+            get: jest.fn(() => undefined),
         } as unknown as ConfigService;
         target = new RecommendationRuleService(config);
 
@@ -76,6 +91,31 @@ describe('RecommendationRuleService', () => {
         expect(affinity.category.scale).toBe(16);
     });
 
+    // Từng weight hữu hạn cực lớn vẫn phải chuẩn hóa được thay vì tràn tổng thành Infinity rồi thành toàn số 0.
+    it('should normalize very large finite profile weights without overflow', () => {
+        // Arrange
+        const config = {
+            get: jest.fn(
+                (key: string, fallback?: string) =>
+                    (key.endsWith('_WEIGHT') ? '1e308' : undefined) ?? fallback,
+            ),
+        } as unknown as ConfigService;
+        target = new RecommendationRuleService(config);
+
+        // Act
+        const affinity = target.getProfileAffinityConfig();
+
+        // Assert
+        expect(affinity.product.weight).toBeCloseTo(1 / 3);
+        expect(affinity.category.weight).toBeCloseTo(1 / 3);
+        expect(affinity.brand.weight).toBeCloseTo(1 / 3);
+        expect(
+            affinity.product.weight +
+                affinity.category.weight +
+                affinity.brand.weight,
+        ).toBeCloseTo(1);
+    });
+
     it('should keep purchase and return weights configurable with their expected signs', () => {
         // Arrange
         const config = {
@@ -100,33 +140,6 @@ describe('RecommendationRuleService', () => {
         // Assert
         expect(completedWeight).toBe(10);
         expect(returnedWeight).toBe(-8);
-    });
-
-    it('should read hybrid weights from config and normalize their total', () => {
-        // Arrange
-        const config = {
-            get: jest.fn((key: string, fallback?: string) =>
-                key === 'RECOMMENDATION_HYBRID_RANKING_WEIGHT_PROFILE_AFFINITY'
-                    ? '2'
-                    : fallback,
-            ),
-        } as unknown as ConfigService;
-        target = new RecommendationRuleService(config);
-
-        // Act
-        const weights = target.getHybridRankingWeights();
-        const total = Object.values(weights).reduce(
-            (sum, value) => sum + value,
-            0,
-        );
-
-        // Assert
-        expect(weights.profileAffinity).toBeCloseTo(2 / 2.75);
-        expect(total).toBeCloseTo(1);
-        expect(config.get).toHaveBeenCalledWith(
-            'RECOMMENDATION_HYBRID_RANKING_WEIGHT_PROFILE_AFFINITY',
-            '0.25',
-        );
     });
 
     it('should expose candidate source status from environment master switches', () => {

@@ -61,11 +61,9 @@ export class RecommendationQueryService {
             input.surface === 'product_detail'
                 ? Math.min(input.pageSize, 24)
                 : input.pageSize;
-        // AI bật thì mọi actor đều được thử model; Standard chỉ là mode tắt AI hoặc fallback khi model không hợp lệ.
-        const mode: RankingMode = this.ranking.isMlRankingEnabled()
-            ? 'ML_HYBRID'
-            : 'HYBRID';
-        const policyVersion = this.ranking.getPolicyVersion(mode);
+        // Mọi response mới dùng LambdaRank; model thiếu/lỗi được xử lý 503 trong adapter, không đổi mode.
+        const mode: RankingMode = 'AI_MODEL';
+        const policyVersion = this.ranking.getPolicyVersion();
         const [globalVersion, actorVersion] = await Promise.all([
             this.redis.getVersion('recommendation:cache-version:global'),
             this.redis.getVersion(
@@ -73,7 +71,7 @@ export class RecommendationQueryService {
             ),
         ]);
         const ruleVersion = encodeURIComponent(policyVersion);
-        const cacheKey = `recommendation:contract-v6:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}`;
+        const cacheKey = `recommendation:contract-v8:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}`;
         const cached =
             await this.redis.getJson<RecommendationResponse>(cacheKey);
         if (cached) {
@@ -109,14 +107,12 @@ export class RecommendationQueryService {
         surface: RecommendationQueryDto['surface'],
     ): RecommendationResponse {
         const requestId = randomUUID();
-        const rankingMode: RankingMode =
-            cached.rankingMode ??
-            (cached.rankingModelVersion ? 'ML_HYBRID' : 'HYBRID');
+        const rankingMode: RankingMode = 'AI_MODEL';
         return {
             ...cached,
             requestId,
             generatedAt: new Date().toISOString(),
-            // Cache cũ có thể chưa có field rankingMode; suy luận an toàn từ model version để response contract luôn đầy đủ.
+            // contract-v8 tách cache theo semantics profile và feature schema mới để response v7 không sống lại.
             rankingMode,
             rankingModelVersion: cached.rankingModelVersion ?? null,
             items: cached.items.map((item) => ({
@@ -130,7 +126,7 @@ export class RecommendationQueryService {
                     surface,
                     policyVersion:
                         cached.rankingPolicyVersion ??
-                        this.ranking.getPolicyVersion(rankingMode),
+                        this.ranking.getPolicyVersion(),
                     rankingMode,
                 }),
             })),
@@ -159,13 +155,19 @@ export class RecommendationQueryService {
                 this.profile.getTop(actorType, actorId, 'CATEGORY', 12),
                 this.profile.getTop(actorType, actorId, 'BRAND', 12),
             ]);
+        // Dùng cùng thành phần dương mà feature đọc; signed score có thể bằng 0 dù người dùng vẫn có bằng chứng quan tâm.
+        const hasPositiveProfileSignal = [
+            ...productPreferences,
+            ...categoryPreferences,
+            ...brandPreferences,
+        ].some((item) => item.positiveScore > 0);
         const profileProductIds = productPreferences
-            .filter((item) => item.score > 0)
+            .filter((item) => item.positiveScore > 0)
             .map((item) => item.dimensionKey);
         const categoryIds = [
             ...new Set([
                 ...categoryPreferences
-                    .filter((item) => item.score > 0)
+                    .filter((item) => item.positiveScore > 0)
                     .map((item) => item.dimensionKey),
                 ...(context?.recentCategoryIds ?? []),
             ]),
@@ -173,7 +175,7 @@ export class RecommendationQueryService {
         const brandIds = [
             ...new Set([
                 ...brandPreferences
-                    .filter((item) => item.score > 0)
+                    .filter((item) => item.positiveScore > 0)
                     .map((item) => item.dimensionKey),
                 ...(context?.recentBrandIds ?? []),
             ]),
@@ -202,14 +204,11 @@ export class RecommendationQueryService {
                 ? { excludeSellerShopId: currentProduct.sellerShopId }
                 : {}),
         };
-        const strategy: RecommendationStrategy =
-            productPreferences.some((item) => item.score > 0) ||
-            categoryPreferences.some((item) => item.score > 0) ||
-            brandPreferences.some((item) => item.score > 0)
-                ? 'PERSONALIZED'
-                : context
-                  ? 'SESSION_BASED'
-                  : 'COLD_START';
+        const strategy: RecommendationStrategy = hasPositiveProfileSignal
+            ? 'PERSONALIZED'
+            : context
+              ? 'SESSION_BASED'
+              : 'COLD_START';
 
         const union = this.unionFactory.create(
             [...excluded],
@@ -231,48 +230,24 @@ export class RecommendationQueryService {
 
         // Giới hạn candidate union trước ranking để request miss không làm phình CPU/DB khi nhiều source cùng trả dữ liệu.
         const candidatePool = union.values();
-        const mlResult =
-            mode === 'ML_HYBRID'
-                ? await this.mlRanking.predict({
-                      requestId: randomUUID(),
-                      candidates: candidatePool,
-                      products: productPreferences,
-                      categories: categoryPreferences,
-                      brands: brandPreferences,
-                      context,
-                  })
-                : {
-                      scores: new Map<string, number>(),
-                      features: new Map(),
-                      modelVersion: null,
-                  };
-        // ML fail-soft phải hạ mode về Standard để analytics phản ánh đúng mode thực sự đã phục vụ.
-        const servingMode: RankingMode =
-            mode === 'ML_HYBRID' && !mlResult.modelVersion ? 'HYBRID' : mode;
+        const mlResult = await this.mlRanking.predict({
+            requestId: randomUUID(),
+            candidates: candidatePool,
+            products: productPreferences,
+            categories: categoryPreferences,
+            brands: brandPreferences,
+            context,
+        });
         const diversified = this.ranking.rank(
             candidatePool,
-            productPreferences,
-            categoryPreferences,
-            brandPreferences,
-            context,
-            strategy,
-            {
-                mode: servingMode,
-                surface: input.surface,
-                mlScores: mlResult.scores,
-                mlFeatures: mlResult.features,
-            },
+            mlResult.scores,
+            mlResult.features,
+            input.surface,
         );
         const total = diversified.length;
         const start = (input.page - 1) * pageSize;
         const pageItems = diversified.slice(start, start + pageSize);
         const requestId = randomUUID();
-        const hasPositiveProfileSignal = [
-            ...productPreferences,
-            ...categoryPreferences,
-            ...brandPreferences,
-        ].some((item) => item.score > 0);
-
         const response: RecommendationResponse = {
             requestId,
             strategy,
@@ -290,7 +265,7 @@ export class RecommendationQueryService {
                     requestId,
                     actorId,
                     input.surface,
-                    servingMode,
+                    mode,
                 ),
             ),
             page: input.page,
@@ -298,9 +273,9 @@ export class RecommendationQueryService {
             total,
             totalPages: total === 0 ? 1 : Math.ceil(total / pageSize),
             generatedAt: new Date().toISOString(),
-            ruleVersion: this.ranking.getRuleVersion(),
-            rankingPolicyVersion: this.ranking.getPolicyVersion(servingMode),
-            rankingMode: servingMode,
+            ruleVersion: this.ranking.getPolicyVersion(),
+            rankingPolicyVersion: this.ranking.getPolicyVersion(),
+            rankingMode: mode,
             rankingModelVersion: mlResult.modelVersion,
         };
         return { response };
@@ -387,7 +362,7 @@ export class RecommendationQueryService {
                 rank,
                 source,
                 surface,
-                policyVersion: this.ranking.getPolicyVersion(mode),
+                policyVersion: this.ranking.getPolicyVersion(),
                 rankingMode: mode,
             }),
             rank,

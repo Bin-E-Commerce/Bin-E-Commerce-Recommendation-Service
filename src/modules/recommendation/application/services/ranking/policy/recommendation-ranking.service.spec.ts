@@ -1,10 +1,11 @@
-// Unit test cho Standard/AI-Enhanced ranking và diversity quota.
+// Unit tests chứng minh raw score của model quyết định thứ tự và kiểm tra quota diversity.
+/// <reference types="jest" />
 
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { createMock, type DeepMocked } from '@golevelup/ts-jest';
 import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
-import { RankingFeatureService } from '@/modules/recommendation/application/services/ranking/features/ranking-feature.service';
 import { RecommendationRankingService } from '@/modules/recommendation/application/services/ranking/policy/recommendation-ranking.service';
 import type { RecommendationCandidate } from '@/modules/recommendation/application/types/ranking/ranking.types';
 
@@ -20,9 +21,8 @@ class MockLoggerService {
 describe('RecommendationRankingService', () => {
     let target: RecommendationRankingService;
     let mockRules: DeepMocked<RecommendationRuleService>;
-    let mockFeatures: DeepMocked<RankingFeatureService>;
 
-    // Tạo product tối thiểu nhưng đầy đủ để ranking không phụ thuộc persistence entity.
+    // Tạo product đủ trường để test ranking không phụ thuộc persistence.
     const createProduct = (
         productId: string,
         categoryId = 'category-1',
@@ -42,8 +42,8 @@ describe('RecommendationRankingService', () => {
         totalSold: 10,
         status: 'ACTIVE',
         isInStock: true,
-        createdAt: new Date('2099-01-01T00:00:00.000Z'),
-        updatedAt: new Date('2099-01-01T00:00:00.000Z'),
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         catalogVersion: '1',
         shortDescription: null,
         description: null,
@@ -56,49 +56,28 @@ describe('RecommendationRankingService', () => {
         embeddingDimensions: null,
     });
 
-    // Tạo candidate theo source để test attribution và feature availability.
+    // Candidate attribution chỉ được dùng làm tie-break ổn định sau raw score.
     const createCandidate = (
         product: RecommendationCatalogProduct,
-        source: string,
-        rawScore?: number,
     ): RecommendationCandidate => ({
         product,
-        sources: new Set([source]),
-        contributions:
-            rawScore === undefined
-                ? [{ source, rawScore: 1, reasonCode: source }]
-                : [{ source, rawScore, reasonCode: source }],
+        sources: new Set(['TRENDING']),
+        contributions: [],
     });
 
     beforeEach(async () => {
         mockRules = createMock<RecommendationRuleService>();
-        mockRules.getRuleVersion.mockReturnValue('phase2-test');
-        mockRules.getHybridPolicyVersion.mockReturnValue('phase4-test');
-        mockRules.getHybridRankingWeights.mockReturnValue({
-            profileAffinity: 0.25,
-            sessionContext: 0.18,
-            semanticSimilarity: 0.15,
-            coBehavior: 0.1,
-            popularity: 0.12,
-            freshness: 0.08,
-            quality: 0.08,
-            exploration: 0.04,
-        });
-        mockRules.getMlRankingBlend.mockReturnValue(0.3);
-        mockRules.getMlRankingPolicyVersion.mockReturnValue('ml-test-v1');
-        mockRules.getRelationScoreScale.mockReturnValue(1);
+        mockRules.getRuleVersion.mockReturnValue('ai-ranking-test-v1');
         mockRules.getDiversityLimits.mockImplementation((surface) =>
             surface === 'product_detail'
                 ? { category: 2, brand: 2, shop: 3, windowSize: 6 }
                 : { category: 4, brand: 3, shop: 5, windowSize: 24 },
         );
-        mockFeatures = createMock<RankingFeatureService>();
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 RecommendationRankingService,
                 { provide: RecommendationRuleService, useValue: mockRules },
-                { provide: RankingFeatureService, useValue: mockFeatures },
             ],
         })
             .setLogger(new MockLoggerService())
@@ -113,115 +92,81 @@ describe('RecommendationRankingService', () => {
         jest.clearAllMocks();
     });
 
-    it('should prioritize semantic candidates in hybrid mode when their feature is stronger', () => {
-        // Arrange
-        const semantic = createCandidate(
-            createProduct('product-semantic'),
-            'SEMANTIC_SIMILARITY',
-            0.9,
-        );
-        const explore = createCandidate(
-            createProduct('product-explore'),
-            'EXPLORE',
-        );
-        mockFeatures.build.mockImplementation((candidate) => ({
-            profileAffinity: 0,
-            sessionContext: 0,
-            semanticSimilarity: candidate.sources.has('SEMANTIC_SIMILARITY')
-                ? 0.9
-                : 0,
-            coBehavior: 0,
-            popularity: 0,
-            freshness: 0,
-            quality: 0,
-            exploration: candidate.sources.has('EXPLORE') ? 1 : 0,
-            negativePenalty: 0,
-        }));
-
-        // Act
-        const result = target.rank(
-            [explore, semantic],
-            [],
-            [],
-            [],
-            null,
-            'PERSONALIZED',
-            { mode: 'HYBRID', surface: 'home' },
-        );
-
-        // Assert
-        expect(result[0]?.product.productId).toBe('product-semantic');
-        expect(result[0]?.features?.semanticSimilarity).toBe(0.9);
-        expect(mockFeatures.build).toHaveBeenCalledTimes(2);
-    });
-
-    it('should use Standard Ranking by default and select another category before relaxing diversity', () => {
+    // Model score không bị clamp thành xác suất giả, vì LambdaRank chỉ cam kết thứ tự relevance.
+    it('should sort candidates by raw model score without clamping', () => {
         // Arrange
         const candidates = [
-            createCandidate(createProduct('product-a-1'), 'CATEGORY_AFFINITY'),
-            createCandidate(createProduct('product-a-2'), 'CATEGORY_AFFINITY'),
-            createCandidate(createProduct('product-a-3'), 'CATEGORY_AFFINITY'),
-            createCandidate(
-                createProduct('product-b-1', 'category-2', 'brand-2'),
-                'CATEGORY_AFFINITY',
-            ),
+            createCandidate(createProduct('product-low')),
+            createCandidate(createProduct('product-high')),
         ];
 
         // Act
         const result = target.rank(
             candidates,
-            [],
-            [],
-            [],
-            null,
-            'PERSONALIZED',
-            {
-                surface: 'product_detail',
-            },
+            new Map([
+                ['product-low', -2.5],
+                ['product-high', 3.2],
+            ]),
+            new Map(),
         );
 
         // Assert
-        expect(
-            result.slice(0, 3).map((item) => item.product.categoryId),
-        ).toEqual(['category-1', 'category-1', 'category-2']);
-        expect(result[2]?.diversityRelaxed).toBeUndefined();
+        expect(result.map((item) => [item.product.productId, item.score])).toEqual([
+            ['product-high', 3.2],
+            ['product-low', -2.5],
+        ]);
+        expect(target.getPolicyVersion()).toBe('ai-ranking-test-v1');
     });
 
-    it('should blend ML score with deterministic hybrid score', () => {
+    // Thiếu một prediction là lỗi dịch vụ; ranker không được tạo điểm công thức để lấp chỗ trống.
+    it('should reject an incomplete model score map', () => {
         // Arrange
-        const candidate = createCandidate(
-            createProduct('product-ml'),
-            'EXPLORE',
+        const candidates = [createCandidate(createProduct('product-1'))];
+
+        // Act / Assert
+        expect(() => target.rank(candidates, new Map(), new Map())).toThrow(
+            ServiceUnavailableException,
         );
-        mockFeatures.build.mockReturnValue({
-            profileAffinity: 0,
-            sessionContext: 0,
-            semanticSimilarity: 0,
-            coBehavior: 0,
-            popularity: 0,
-            freshness: 0,
-            quality: 0,
-            exploration: 0,
-            negativePenalty: 0,
-        });
+    });
+
+    // Diversity ưu tiên thứ tự score trong lượt đầu, rồi đánh dấu item chỉ được thêm khi quota nới.
+    it('should preserve model order except where diversity quota requires a different category', () => {
+        // Arrange
+        const candidates = [
+            createCandidate(createProduct('product-a-1')),
+            createCandidate(createProduct('product-a-2')),
+            createCandidate(createProduct('product-a-3')),
+            createCandidate(
+                createProduct('product-b-1', 'category-2', 'brand-2'),
+            ),
+        ];
+        const scores = new Map([
+            ['product-a-1', 4],
+            ['product-a-2', 3],
+            ['product-a-3', 2],
+            ['product-b-1', 1],
+        ]);
 
         // Act
-        const result = target.rank(
-            [candidate],
-            [],
-            [],
-            [],
-            null,
-            'PERSONALIZED',
-            {
-                mode: 'ML_HYBRID',
-                surface: 'home',
-                mlScores: new Map([['product-ml', 1]]),
-            },
-        );
+        const result = target.rank(candidates, scores, new Map(), 'product_detail');
 
         // Assert
-        expect(result[0]?.score).toBeCloseTo(0.3);
-        expect(mockFeatures.build).toHaveBeenCalledTimes(1);
+        expect(result.map((item) => item.product.productId)).toEqual([
+            'product-a-1',
+            'product-a-2',
+            'product-b-1',
+            'product-a-3',
+        ]);
+        expect(result[3]?.diversityRelaxed).toBe(true);
+    });
+
+    // Không cần gọi model hay cấu hình diversity khi candidate generation trả tập rỗng.
+    it('should return an empty list for an empty candidate pool', () => {
+        // Arrange / Act
+        const result = target.rank([], new Map(), new Map());
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(mockRules.getDiversityLimits).not.toHaveBeenCalled();
     });
 });

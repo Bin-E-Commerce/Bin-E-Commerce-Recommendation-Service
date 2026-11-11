@@ -263,10 +263,11 @@ export class RankingSimulationService {
             if (!action) throw new Error('SYNTHETIC_ACTION_MISSING');
             rows.push({
                 datasetVersion: 'ranking-synthetic-v1',
-                featureSchemaVersion: 'ranking-features-v1',
+                featureSchemaVersion: 'ranking-features-v2',
                 userId: persona.userId,
                 sessionId: session.sessionId,
                 requestId: session.requestId,
+                requestAt: session.createdAt,
                 itemId: product.productId,
                 position,
                 features: this.toFeatureRow(vector),
@@ -279,6 +280,7 @@ export class RankingSimulationService {
                 userId: persona.userId,
                 sessionId: session.sessionId,
                 requestId: session.requestId,
+                requestAt: session.createdAt,
                 itemId: product.productId,
                 interactionType: 'PRODUCT_IMPRESSED',
                 position,
@@ -290,6 +292,7 @@ export class RankingSimulationService {
                     userId: persona.userId,
                     sessionId: session.sessionId,
                     requestId: session.requestId,
+                    requestAt: session.createdAt,
                     itemId: product.productId,
                     interactionType: eventType,
                     position,
@@ -351,7 +354,7 @@ export class RankingSimulationService {
         return { product, sources, contributions };
     }
 
-    // Xấp xỉ mức phù hợp ẩn bằng tín hiệu persona/catalog độc lập với điểm Hybrid.
+    // Xấp xỉ mức phù hợp ẩn bằng persona/catalog độc lập với vector feature đầu vào model.
     private hiddenUtility(
         product: RecommendationCatalogProduct,
         persona: RankingSyntheticPersona,
@@ -540,7 +543,7 @@ export class RankingSimulationService {
         );
     }
 
-    // Gán split theo thứ tự session để tránh rò rỉ cùng request/user giữa train, validation và test.
+    // Gán split theo thời gian session; user có thể xuất hiện lại ở giai đoạn sau như trong đánh giá temporal thực tế.
     private splitFor(index: number, total: number): SyntheticDatasetSplit {
         const ratio = index / Math.max(total, 1);
         if (ratio < 0.7) return 'train';

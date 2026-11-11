@@ -168,14 +168,14 @@ export class RecommendationInteractionEntity {
     })
     recommendationExperimentId!: string | null;
 
-    // Variant attribution lưu cả CONTROL legacy để phân tích lịch sử; request mới chỉ được gán HYBRID/ML_HYBRID.
+    // Giữ mode legacy để đọc event lịch sử; request recommendation mới chỉ phát AI_MODEL.
     @Column({
         name: 'recommendation_experiment_variant',
         type: 'varchar',
         length: 16,
         nullable: true,
     })
-    recommendationExperimentVariant!: 'CONTROL' | 'HYBRID' | 'ML_HYBRID' | null;
+    recommendationExperimentVariant!: 'CONTROL' | 'AI_MODEL' | 'HYBRID' | 'ML_HYBRID' | null;
 
     // Metadata trace tối thiểu; không dùng để thay thế các cột truy vấn chính và không chứa token/PII nhạy cảm.
     @Column({ type: 'jsonb', default: {} })

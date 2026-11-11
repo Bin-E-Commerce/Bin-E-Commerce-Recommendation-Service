@@ -110,4 +110,80 @@ describe('event validators', () => {
             'data.items must contain between 1 and 200 items',
         );
     });
+
+    // Consumer cần nhận event cũ không có brandId và event mới có brand snapshot hợp lệ.
+    it('should accept purchase events with or without an optional brand snapshot', () => {
+        // Arrange
+        const event = {
+            eventId: 'purchase-event-2',
+            eventName: 'order.purchase.completed',
+            eventVersion: 1,
+            source: 'order-service',
+            aggregateId: 'order-1',
+            occurredAt: '2026-09-06T10:00:00.000Z',
+            data: {
+                orderId: 'order-1',
+                customerUserId: 'user-1',
+                occurredAt: '2026-09-06T10:00:00.000Z',
+                items: [
+                    {
+                        orderItemId: 'item-1',
+                        productId: 'product-1',
+                        variantId: 'variant-1',
+                        categoryId: 'category-1',
+                        brandId: 'brand-1',
+                        quantity: 1,
+                    },
+                ],
+            },
+        };
+
+        // Act
+        const result = validatePurchaseEvent(event);
+
+        // Assert
+        expect(result.data.items[0]?.brandId).toBe('brand-1');
+        expect(
+            validatePurchaseEvent({
+                ...event,
+                data: {
+                    ...event.data,
+                    items: [{ ...event.data.items[0], brandId: undefined }],
+                },
+            }).data.items[0]?.brandId,
+        ).toBeUndefined();
+    });
+
+    // Brand key sai kiểu phải vào validation error thay vì tạo dimension key không hợp lệ trong profile.
+    it('should reject a purchase event with a non-string brand snapshot', () => {
+        // Arrange
+        const event = {
+            eventId: 'purchase-event-3',
+            eventName: 'order.purchase.completed',
+            eventVersion: 1,
+            source: 'order-service',
+            aggregateId: 'order-1',
+            occurredAt: '2026-09-06T10:00:00.000Z',
+            data: {
+                orderId: 'order-1',
+                customerUserId: 'user-1',
+                occurredAt: '2026-09-06T10:00:00.000Z',
+                items: [
+                    {
+                        orderItemId: 'item-1',
+                        productId: 'product-1',
+                        variantId: null,
+                        categoryId: null,
+                        brandId: 123,
+                        quantity: 1,
+                    },
+                ],
+            },
+        };
+
+        // Act & Assert
+        expect(() => validatePurchaseEvent(event)).toThrow(
+            'data.items[0].brandId must be a non-empty bounded string',
+        );
+    });
 });

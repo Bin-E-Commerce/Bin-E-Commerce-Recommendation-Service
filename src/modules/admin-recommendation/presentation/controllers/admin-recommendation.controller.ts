@@ -1,13 +1,10 @@
 // HTTP boundary cho Admin Recommendation Center; permission được kiểm tra lại ở đây sau lớp Gateway.
 
 import {
-    Body,
     Controller,
     Get,
     Headers,
     Param,
-    Patch,
-    Post,
     Query,
     BadRequestException,
     ForbiddenException,
@@ -22,7 +19,6 @@ import {
     AnalyticsQueryDto,
     ActorQueryDto,
 } from '@/modules/admin-recommendation/presentation/dto/analytics-query.dto';
-import { UpdateRecommendationPolicyDto } from '@/modules/admin-recommendation/presentation/dto/policy.dto';
 import { AdminRecommendationService } from '@/modules/admin-recommendation/application/services/admin-recommendation.service';
 
 @ApiTags('Admin - Recommendation')
@@ -158,18 +154,17 @@ export class AdminRecommendationController {
 
     @Get('config')
     @ApiOperation({
-        summary: 'Đọc policy ranking đang có hiệu lực',
+        summary: 'Đọc trạng thái model ranking đang phục vụ',
         description: [
-            'Mục đích: cho Admin xem cấu hình mà Recommendation Service hiện đang dùng để xếp hạng sản phẩm.',
+            'Mục đích: cho Admin xác nhận Recommendation Service chỉ dùng model LambdaRank và xem artifact có sẵn sàng hay không.',
             'Đầu vào: không có query hoặc body.',
-            'Kết quả: version và trạng thái policy cùng hybridWeights của Standard Ranking, cấu hình AI, trạng thái các candidate source theo ENV, trạng thái model, người cập nhật, lý do và thời điểm. Nếu chưa lưu policy trong database, trả cấu hình runtime mặc định hiện tại.',
+            'Kết quả: rankingMode, objective, version, trạng thái candidate source và trạng thái artifact LambdaRank. Endpoint không trả hoặc nhận trọng số Standard/AI blend.',
             'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_READ.',
         ].join('\n\n'),
     })
     @ApiResponse({
         status: 200,
-        description:
-            'Policy đang chạy hoặc cấu hình runtime mặc định nếu chưa có bản được lưu.',
+        description: 'Trạng thái model LambdaRank và các candidate source.',
     })
     @ApiResponse({
         status: 401,
@@ -187,46 +182,6 @@ export class AdminRecommendationController {
             Permission.ADMIN_RECOMMENDATION_POLICY_READ,
         );
         return this.service.getPolicy();
-    }
-
-    @Patch('config')
-    @ApiOperation({
-        summary: 'Cập nhật policy ranking',
-        description: [
-            'Mục đích: thay đổi trọng số Standard Ranking hoặc cấu hình AI-Enhanced Ranking đang áp dụng.',
-            'Đầu vào: body patch có thể gồm hybridWeights, mlEnabled, mlBlend (0–0.5) và reason. Khi mlEnabled bật, AI áp dụng cho toàn bộ request; nếu model lỗi hệ thống tự fallback về Standard Ranking. Actor cập nhật được lấy từ trusted x-user-id header.',
-            'Xử lý và kết quả: backend kiểm tra key/trọng số, chuẩn hóa tổng trọng số, lưu một version policy mới rồi cập nhật runtime; response trả version, config và metadata lưu.',
-            'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_WRITE. Cấu hình sai hoặc tổng trọng số không hợp lệ bị từ chối, không thay policy đang chạy.',
-        ].join('\n\n'),
-    })
-    @ApiResponse({
-        status: 200,
-        description:
-            'Policy mới đã lưu và được áp dụng; trả version cùng cấu hình đã chuẩn hóa.',
-    })
-    @ApiResponse({
-        status: 400,
-        description:
-            'Weight/key hoặc ML blend không hợp lệ; policy hiện tại không bị thay đổi.',
-    })
-    @ApiResponse({
-        status: 401,
-        description:
-            'Internal token thiếu/không hợp lệ hoặc thiếu user identity của Admin.',
-    })
-    @ApiResponse({
-        status: 403,
-        description: 'Admin không có quyền cập nhật policy recommendation.',
-    })
-    async updateConfig(
-        @Headers() headers: Record<string, string | string[] | undefined>,
-        @Body() body: UpdateRecommendationPolicyDto,
-    ) {
-        this.assertPermission(
-            headers,
-            Permission.ADMIN_RECOMMENDATION_POLICY_WRITE,
-        );
-        return this.service.updatePolicy(body, this.requireUserId(headers));
     }
 
     @Get('config/history')
@@ -261,57 +216,11 @@ export class AdminRecommendationController {
         return this.service.getPolicyHistory();
     }
 
-    @Post('config/rollback/:version')
-    @ApiOperation({
-        summary: 'Khôi phục cấu hình từ một phiên bản policy cũ',
-        description: [
-            'Mục đích: đưa cấu hình của một version trong lịch sử trở lại runtime khi policy mới gây kết quả không mong muốn.',
-            'Đầu vào: version cần khôi phục trên đường dẫn; actor thực hiện lấy từ trusted x-user-id header.',
-            'Xử lý và kết quả: backend tạo một version rollback mới từ config cũ, lưu và áp dụng nó. Bản lịch sử cũ không bị sửa/xóa; response cho biết version mới và version được khôi phục.',
-            'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_ROLLBACK. Version không còn trong lịch sử được báo 404.',
-        ].join('\n\n'),
-    })
-    @ApiParam({
-        name: 'version',
-        description: 'Mã version policy cũ cần khôi phục.',
-    })
-    @ApiResponse({
-        status: 201,
-        description: 'Đã tạo và áp dụng một version rollback mới.',
-    })
-    @ApiResponse({
-        status: 401,
-        description:
-            'Internal token thiếu/không hợp lệ hoặc thiếu user identity của Admin.',
-    })
-    @ApiResponse({
-        status: 403,
-        description: 'Admin không có quyền rollback policy recommendation.',
-    })
-    @ApiResponse({
-        status: 404,
-        description:
-            'Không tìm thấy version policy trong lịch sử được phép tra cứu.',
-    })
-    async rollback(
-        @Headers() headers: Record<string, string | string[] | undefined>,
-        @Param('version') version: string,
-    ) {
-        this.assertPermission(
-            headers,
-            Permission.ADMIN_RECOMMENDATION_POLICY_ROLLBACK,
-        );
-        return this.service.rollbackPolicy(
-            version,
-            this.requireUserId(headers),
-        );
-    }
-
     @Get('ranking-performance')
     @ApiOperation({
         summary: 'Đọc hiệu quả theo ranking mode',
         description: [
-            'Mục đích: theo dõi dữ liệu attribution theo ranking mode thực tế để biết AI và Standard/Fallback đang tạo ra bao nhiêu impression, click và hành động liên quan.',
+            'Mục đích: theo dõi impression, click và hành động theo ranking mode được ghi trên từng sự kiện attribution; giá trị cũ chỉ xuất hiện nếu còn event lịch sử.',
             'Đầu vào: from/to dạng ngày giờ; mặc định lấy 30 ngày gần nhất và giới hạn tối đa 31 ngày.',
             'Kết quả: số liệu aggregate từ toàn bộ event có recommendation attribution trong khoảng đã chọn, nhóm theo ranking mode; endpoint không chia traffic và không tự sinh dữ liệu thử nghiệm.',
             'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_ANALYTICS_READ.',

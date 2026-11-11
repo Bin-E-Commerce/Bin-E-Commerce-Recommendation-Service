@@ -1,6 +1,10 @@
 // Service này là adapter application tới AI Service; chỉ gửi feature vector đã normalize, không gửi catalog text hay dữ liệu user.
 
-import { Injectable, Logger } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -15,7 +19,6 @@ import {
     RankingFeatureService,
     type RankingPreferenceLookup,
 } from '@/modules/recommendation/application/services/ranking/features/ranking-feature.service';
-import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 
 const FEATURE_ORDER: Array<keyof RankingFeatureVector> = [
     'profileAffinity',
@@ -37,7 +40,6 @@ export interface RecommendationMlRankingResult {
 
 export interface RecommendationMlRankingStatus {
     ready: boolean;
-    fallback: boolean;
     modelVersion: string | null;
     featureCount: number | null;
     reachable: boolean;
@@ -54,7 +56,6 @@ export class RecommendationMlRankingService {
     constructor(
         private readonly config: ConfigService,
         private readonly features: RankingFeatureService,
-        private readonly rules: RecommendationRuleService,
     ) {
         this.baseUrl = config
             .get<string>('AI_SERVICE_URL', 'http://localhost:3009')
@@ -71,12 +72,11 @@ export class RecommendationMlRankingService {
             config.get<string>('ML_RANKING_LOG_SCORES', 'false') === 'true';
     }
 
-    // Đọc trạng thái model qua boundary nội bộ để Admin phân biệt policy đã bật với AI thật sự đang phục vụ.
+    // Đọc trạng thái artifact qua boundary nội bộ để Admin biết ranker đã sẵn sàng hay chưa.
     async getStatus(): Promise<RecommendationMlRankingStatus> {
         if (!this.token) {
             return {
                 ready: false,
-                fallback: true,
                 modelVersion: null,
                 featureCount: null,
                 reachable: false,
@@ -96,13 +96,11 @@ export class RecommendationMlRankingService {
                 throw new Error(`AI_RANKING_STATUS_HTTP_${response.status}`);
             const payload = (await response.json()) as {
                 ready?: unknown;
-                fallback?: unknown;
                 modelVersion?: unknown;
                 featureCount?: unknown;
             };
             return {
                 ready: payload.ready === true,
-                fallback: payload.fallback === true,
                 modelVersion:
                     typeof payload.modelVersion === 'string'
                         ? payload.modelVersion
@@ -119,7 +117,6 @@ export class RecommendationMlRankingService {
             );
             return {
                 ready: false,
-                fallback: true,
                 modelVersion: null,
                 featureCount: null,
                 reachable: false,
@@ -129,7 +126,7 @@ export class RecommendationMlRankingService {
         }
     }
 
-    // Gọi batch prediction fail-soft để recommendation vẫn trả Hybrid score khi AI Service timeout, lỗi schema hoặc chưa có model.
+    // Gọi batch LambdaRank; lỗi hoặc model chưa sẵn sàng làm request dừng thay vì tạo score thay thế.
     async predict(input: {
         requestId: string;
         candidates: RecommendationCandidate[];
@@ -138,16 +135,17 @@ export class RecommendationMlRankingService {
         brands: PreferenceValue[];
         context: SessionContext | null;
     }): Promise<RecommendationMlRankingResult> {
-        if (
-            !this.rules.isMlRankingEnabled() ||
-            input.candidates.length === 0 ||
-            !this.token
-        ) {
+        if (input.candidates.length === 0) {
             return {
                 scores: new Map(),
                 features: new Map(),
                 modelVersion: null,
             };
+        }
+        if (!this.token) {
+            throw new ServiceUnavailableException(
+                'RANKING_MODEL_SERVICE_NOT_CONFIGURED',
+            );
         }
 
         const candidates = input.candidates.slice(0, 300);
@@ -157,6 +155,8 @@ export class RecommendationMlRankingService {
             input.categories,
             input.brands,
         );
+        // Dùng chung mốc giờ cho toàn candidate để tuổi preference không đổi theo thứ tự vòng lặp.
+        const referenceTime = new Date();
         const items = candidates.map((candidate) => ({
             itemId: candidate.product.productId,
             features: this.toFeatureRow(
@@ -165,6 +165,7 @@ export class RecommendationMlRankingService {
                     input,
                     featureByProductId,
                     preferenceLookup,
+                    referenceTime,
                 ),
             ),
         }));
@@ -202,12 +203,12 @@ export class RecommendationMlRankingService {
                 if (!this.isPrediction(prediction)) continue;
                 const itemId = prediction.itemId.trim();
                 if (!allowed.has(itemId)) continue;
-                // Duplicate item trong response thường là lỗi contract; fail-soft để Hybrid xử lý nhất quán.
+                // Duplicate item phá tính một-score-mỗi-candidate nên hủy toàn bộ batch.
                 if (scores.has(itemId))
                     throw new Error('AI_RANKING_DUPLICATE_ITEM');
-                scores.set(itemId, this.clamp(prediction.score));
+                scores.set(itemId, prediction.score);
             }
-            // Prediction phải đủ cho toàn bộ batch; response thiếu item hoặc chứa item lạ là invalid và phải fallback toàn batch.
+            // Model phải trả đúng mọi candidate trong request; không trộn batch hợp lệ với điểm thiếu.
             if (scores.size !== candidates.length) {
                 throw new Error('AI_RANKING_INCOMPLETE_RESPONSE');
             }
@@ -216,14 +217,9 @@ export class RecommendationMlRankingService {
                 payload.modelVersion.trim().length > 0
                     ? payload.modelVersion.trim()
                     : null;
-            // AI Service có thể trả deterministic fallback khi chưa load LightGBM;
-            // fallback này không được tính là AI ranking hoặc blend vào ranking thật.
+            // Registry từ chối fallback; version rỗng đồng nghĩa output không thể attribue thành ranking model.
             if (!modelVersion || modelVersion.startsWith('ranking-fallback')) {
-                return {
-                    scores: new Map(),
-                    features: featureByProductId,
-                    modelVersion: null,
-                };
+                throw new Error('AI_RANKING_MODEL_VERSION_MISSING');
             }
             this.logPredictionScores(
                 input.requestId,
@@ -238,24 +234,22 @@ export class RecommendationMlRankingService {
             };
         } catch (error) {
             this.logger.warn(
-                `ML ranking unavailable; using deterministic Hybrid fallback: ${this.errorMessage(error)}`,
+                `LambdaRank unavailable: ${this.errorMessage(error)}`,
             );
-            return {
-                scores: new Map(),
-                features: featureByProductId,
-                modelVersion: null,
-            };
+            throw new ServiceUnavailableException(
+                'RECOMMENDATION_RANKING_MODEL_UNAVAILABLE',
+            );
         } finally {
             clearTimeout(timer);
         }
     }
 
-    // Giữ thứ tự feature cố định giữa Recommendation và AI để model artifact không bị lệch cột khi refactor code.
+    // Giữ thứ tự feature cố định giữa Recommendation và AI để artifact không bị lệch cột khi refactor code.
     private toFeatureRow(features: RankingFeatureVector): number[] {
         return FEATURE_ORDER.map((key) => this.clamp(features[key]));
     }
 
-    // Log từng score ML hợp lệ ở local để đối chiếu candidate; chỉ log sau khi batch đã đủ item và model không phải fallback.
+    // Log raw relevance score ở local để đối chiếu candidate sau khi toàn batch đã được xác thực.
     private logPredictionScores(
         requestId: string,
         modelVersion: string,
@@ -273,7 +267,7 @@ export class RecommendationMlRankingService {
         }
     }
 
-    // Cache feature vector trong cùng request để ranker không phải tính lại toàn bộ preference/semantic relation.
+    // Cache feature vector trong batch để không tính lại preference/semantic relation sau khi model phản hồi.
     private buildFeatures(
         candidate: RecommendationCandidate,
         input: {
@@ -284,6 +278,7 @@ export class RecommendationMlRankingService {
         },
         target: Map<string, RankingFeatureVector>,
         lookup: RankingPreferenceLookup,
+        referenceTime: Date,
     ): RankingFeatureVector {
         const features = this.features.build(
             candidate,
@@ -292,12 +287,13 @@ export class RecommendationMlRankingService {
             input.brands,
             input.context,
             lookup,
+            referenceTime,
         );
         target.set(candidate.product.productId, features);
         return features;
     }
 
-    // Chỉ nhận prediction hữu hạn trong [0, 1], không tin payload từ service nội bộ một cách mù quáng.
+    // Chỉ nhận raw prediction hữu hạn; không clamp về xác suất vì LambdaRank score không phải xác suất.
     private isPrediction(
         value: unknown,
     ): value is { itemId: string; score: number } {
@@ -311,7 +307,7 @@ export class RecommendationMlRankingService {
         );
     }
 
-    // Clamp một lần ở boundary để model output bất thường không phá invariant ranking.
+    // Clamp chỉ áp dụng cho feature đầu vào; model score được giữ nguyên để so thứ tự.
     private clamp(value: number): number {
         return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
     }

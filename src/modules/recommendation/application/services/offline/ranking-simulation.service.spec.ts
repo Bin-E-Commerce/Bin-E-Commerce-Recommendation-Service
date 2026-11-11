@@ -72,7 +72,7 @@ describe('RankingSimulationService', () => {
         expect(second).toEqual(first);
     });
 
-    // Kiểm tra feature contract, split và label balance tối thiểu ở từng recommendation request.
+    // Kiểm tra feature, request timestamp và label balance tối thiểu trong từng request.
     it('should create bounded nine-feature rows with positive and negative items per request', () => {
         // Arrange
         const dataset = target.generate(createCatalog(), createOptions());
@@ -90,6 +90,16 @@ describe('RankingSimulationService', () => {
         expect(dataset.events.length).toBeGreaterThan(160);
         expect(dataset.rows.every((row) => row.features)).toBe(true);
         expect(
+            dataset.rows.every((row) =>
+                Number.isFinite(Date.parse(row.requestAt)),
+            ),
+        ).toBe(true);
+        expect(
+            dataset.events.every((event) =>
+                Number.isFinite(Date.parse(event.requestAt)),
+            ),
+        ).toBe(true);
+        expect(
             dataset.rows.every(
                 (row) =>
                     row.features.length === 9 &&
@@ -106,8 +116,8 @@ describe('RankingSimulationService', () => {
         expect(new Set(dataset.rows.map((row) => row.requestId)).size).toBe(20);
     });
 
-    // Kiểm tra split theo timeline để cùng session không bị trộn giữa train, validation và test.
-    it('should split rows by session order without overlapping request IDs', () => {
+    // Kiểm tra split theo timestamp tăng dần và không đưa cùng request sang hai tập.
+    it('should split requests in chronological order without overlap', () => {
         // Arrange
         const dataset = target.generate(createCatalog(), createOptions());
 
@@ -129,6 +139,28 @@ describe('RankingSimulationService', () => {
                 (requestIdsBySplit.get('validation') ?? new Set()).has(id),
             ),
         ).toBe(false);
+        const earliestValidation = Math.min(
+            ...dataset.sessions
+                .filter((session) => session.split === 'validation')
+                .map((session) => Date.parse(session.createdAt)),
+        );
+        const latestTrain = Math.max(
+            ...dataset.sessions
+                .filter((session) => session.split === 'train')
+                .map((session) => Date.parse(session.createdAt)),
+        );
+        const earliestTest = Math.min(
+            ...dataset.sessions
+                .filter((session) => session.split === 'test')
+                .map((session) => Date.parse(session.createdAt)),
+        );
+        const latestValidation = Math.max(
+            ...dataset.sessions
+                .filter((session) => session.split === 'validation')
+                .map((session) => Date.parse(session.createdAt)),
+        );
+        expect(latestTrain).toBeLessThan(earliestValidation);
+        expect(latestValidation).toBeLessThan(earliestTest);
     });
 
     // Kiểm tra catalog không đủ candidate bị từ chối thay vì sinh dataset thiếu contract.

@@ -1,4 +1,4 @@
-// Service này tập trung weight/decay/rule version để ranking và profile projection dùng cùng một policy có thể cấu hình.
+// Service này tập trung weight/rule version; half-life profile được khóa để aggregate đã ghi không bị trộn chính sách.
 
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -16,6 +16,8 @@ const DEFAULT_PURCHASE_WEIGHTS = {
     completed: 8,
     returned: -8,
 } as const;
+
+const PROFILE_AFFINITY_HALF_LIFE_DAYS = 7;
 
 const RELATION_WEIGHT_CONFIG_KEYS = {
     PRODUCT_VIEWED: 'RECOMMENDATION_RELATION_CO_VIEW_WEIGHT',
@@ -38,22 +40,8 @@ const DEFAULT_RELATION_WEIGHTS = {
     PRODUCT_ADDED_TO_CART: 3,
 } as const;
 
-export interface HybridRankingWeights {
-    profileAffinity: number;
-    sessionContext: number;
-    semanticSimilarity: number;
-    coBehavior: number;
-    popularity: number;
-    freshness: number;
-    quality: number;
-    exploration: number;
-}
-
 export interface RuntimeRecommendationPolicy {
     version: string;
-    hybridWeights?: Partial<HybridRankingWeights>;
-    mlEnabled?: boolean;
-    mlBlend?: number;
 }
 
 export interface ProfileAffinityConfig {
@@ -62,22 +50,14 @@ export interface ProfileAffinityConfig {
     brand: { weight: number; scale: number };
 }
 
-const DEFAULT_HYBRID_RANKING_WEIGHTS: HybridRankingWeights = {
-    profileAffinity: 0.25,
-    sessionContext: 0.18,
-    semanticSimilarity: 0.15,
-    coBehavior: 0.1,
-    popularity: 0.12,
-    freshness: 0.08,
-    quality: 0.08,
-    exploration: 0.04,
-};
-
 @Injectable()
 export class RecommendationRuleService {
     private runtimePolicy: RuntimeRecommendationPolicy | null = null;
 
-    constructor(private readonly config: ConfigService) {}
+    // Kiểm tra cấu hình ngay khi provider khởi tạo để service không chạy với aggregate đã decay theo H khác.
+    constructor(private readonly config: ConfigService) {
+        this.getProfileHalfLifeDays();
+    }
 
     // Cập nhật policy đã được admin validate; runtime override giúp thay đổi ranking mà không cần restart service.
     setRuntimePolicy(policy: RuntimeRecommendationPolicy | null): void {
@@ -131,15 +111,18 @@ export class RecommendationRuleService {
         return returned ? -weight : weight;
     }
 
-    // Half-life dài hạn của profile được giới hạn dương để tránh decay sai hoặc score vô hạn.
+    // Half-life được khóa ở 7 ngày vì aggregate đã decay khi ghi; đổi giá trị mà không replay event sẽ trộn hai chính sách.
     getProfileHalfLifeDays(): number {
-        const value = Number(
-            this.config.get<string>(
-                'RECOMMENDATION_PROFILE_HALF_LIFE_DAYS',
-                '7',
-            ),
+        const configured = this.config.get<string>(
+            'RECOMMENDATION_PROFILE_HALF_LIFE_DAYS',
         );
-        return Number.isFinite(value) && value > 0 ? value : 7;
+        if (configured === undefined) return PROFILE_AFFINITY_HALF_LIFE_DAYS;
+
+        const value = Number(configured);
+        if (value !== PROFILE_AFFINITY_HALF_LIFE_DAYS) {
+            throw new Error('PROFILE_HALF_LIFE_CHANGE_REQUIRES_PROFILE_REPLAY');
+        }
+        return PROFILE_AFFINITY_HALF_LIFE_DAYS;
     }
 
     // Đọc ngưỡng chuẩn hóa và trọng số ba chiều, rồi chuẩn hóa trọng số về tổng 1.
@@ -182,98 +165,28 @@ export class RecommendationRuleService {
             category: readDimension('category'),
             brand: readDimension('brand'),
         };
-        const total = dimensions.reduce(
-            (sum, dimension) => sum + configured[dimension].weight,
+        // Chia từng trọng số cho số lớn nhất trước để tổng không tràn Infinity với ENV hữu hạn nhưng cực lớn.
+        const maxWeight = Math.max(
+            ...dimensions.map((dimension) => configured[dimension].weight),
+        );
+        if (maxWeight <= 0) return defaults;
+        const scaledTotal = dimensions.reduce(
+            (sum, dimension) => sum + configured[dimension].weight / maxWeight,
             0,
         );
-        if (total <= 0) return defaults;
         for (const dimension of dimensions) {
-            configured[dimension].weight /= total;
+            configured[dimension].weight =
+                configured[dimension].weight / maxWeight / scaledTotal;
         }
         return configured;
     }
 
-    // Rule version đi cùng response/cache giúp phân biệt kết quả sinh bởi policy nào khi deploy thay đổi trọng số.
+    // Version đi cùng response/cache để cách ly artifact hoặc policy ranking mới khỏi cache cũ.
     getRuleVersion(): string {
         if (this.runtimePolicy?.version) return this.runtimePolicy.version;
         return this.config.get<string>(
-            'RECOMMENDATION_RULE_VERSION',
-            'standard-ranking-profile-v2',
-        );
-    }
-
-    // Đọc trọng số Standard Ranking và normalize tổng về 1 để policy đổi mà không sửa business logic.
-    getHybridRankingWeights(): HybridRankingWeights {
-        const configuredWeights = this.runtimePolicy?.hybridWeights;
-        const values = Object.fromEntries(
-            Object.entries(DEFAULT_HYBRID_RANKING_WEIGHTS).map(
-                ([name, defaultValue]) => {
-                    const configName = name
-                        .replace(/[A-Z]/g, (letter) => `_${letter}`)
-                        .toUpperCase();
-                    const configured = Number(
-                        configuredWeights?.[
-                            name as keyof HybridRankingWeights
-                        ] ??
-                            this.config.get<string>(
-                                `RECOMMENDATION_HYBRID_RANKING_WEIGHT_${configName}`,
-                                String(defaultValue),
-                            ),
-                    );
-                    return [
-                        name,
-                        Number.isFinite(configured) && configured >= 0
-                            ? configured
-                            : defaultValue,
-                    ];
-                },
-            ),
-        ) as HybridRankingWeights;
-        const total = Object.values(values).reduce(
-            (sum, value) => sum + value,
-            0,
-        );
-        if (total <= 0) return DEFAULT_HYBRID_RANKING_WEIGHTS;
-        return Object.fromEntries(
-            Object.entries(values).map(([name, value]) => [
-                name,
-                Number((value / total).toFixed(8)),
-            ]),
-        ) as unknown as HybridRankingWeights;
-    }
-
-    // Trả version policy Standard để cache tách biệt với kết quả có AI blend.
-    getHybridPolicyVersion(): string {
-        if (this.runtimePolicy?.version) return this.runtimePolicy.version;
-        return this.config.get<string>(
             'RECOMMENDATION_RANKING_POLICY_VERSION',
-            'standard-ranking-profile-v2',
-        );
-    }
-
-    // AI là lớp blend tùy chọn; Standard vẫn chạy độc lập khi AI tắt hoặc provider lỗi.
-    isMlRankingEnabled(): boolean {
-        if (this.runtimePolicy?.mlEnabled !== undefined) {
-            return this.runtimePolicy.mlEnabled;
-        }
-        return this.config.get<string>('ML_RANKING_ENABLED', 'true') === 'true';
-    }
-
-    // Giới hạn ML blend tối đa 50% để model mới không thể đột ngột thay toàn bộ behavior đã kiểm chứng.
-    getMlRankingBlend(): number {
-        const value = Number(
-            this.runtimePolicy?.mlBlend ??
-                this.config.get<string>('ML_RANKING_BLEND', '0.3'),
-        );
-        return Number.isFinite(value) ? Math.min(0.5, Math.max(0, value)) : 0.3;
-    }
-
-    // Version model/policy đi vào cache key để đổi artifact không phục vụ nhầm kết quả cũ.
-    getMlRankingPolicyVersion(): string {
-        if (this.runtimePolicy?.version) return this.runtimePolicy.version;
-        return this.config.get<string>(
-            'ML_RANKING_POLICY_VERSION',
-            'ml-hybrid-v1',
+            'ai-lambdarank-profile-v2',
         );
     }
 
@@ -317,19 +230,9 @@ export class RecommendationRuleService {
         };
     }
 
-    // Trả snapshot policy đã chuẩn hóa cho Admin API và bootstrap, không để UI phải suy diễn default từ env.
-    getPolicySnapshot(): {
-        version: string;
-        hybridWeights: HybridRankingWeights;
-        mlEnabled: boolean;
-        mlBlend: number;
-    } {
-        return {
-            version: this.getRuleVersion(),
-            hybridWeights: this.getHybridRankingWeights(),
-            mlEnabled: this.isMlRankingEnabled(),
-            mlBlend: this.getMlRankingBlend(),
-        };
+    // Admin và bootstrap chỉ cần policy version; model objective/weights thuộc artifact đã train.
+    getPolicySnapshot(): { version: string } {
+        return { version: this.getRuleVersion() };
     }
 
     // Relation scale cấu hình được để purchase/cart/view có ảnh hưởng khác nhau mà không hard-code trong ranker.

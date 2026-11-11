@@ -3,7 +3,7 @@
 
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
 
-export type RankingMode = 'HYBRID' | 'ML_HYBRID';
+export type RankingMode = 'AI_MODEL';
 
 export type RecommendationCandidate = {
     product: RecommendationCatalogProduct;

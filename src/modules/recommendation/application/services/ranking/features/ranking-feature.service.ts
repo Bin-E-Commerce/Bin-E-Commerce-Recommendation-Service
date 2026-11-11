@@ -1,5 +1,5 @@
-// File này chuyển profile, session và candidate attribution thành feature vector chuẩn hóa; không xếp hạng và không truy cập database.
-// Mọi feature đều bounded trong [0, 1] để hybrid policy có thể cộng trọng số ổn định.
+// File này chuyển profile, session và candidate attribution thành feature vector; không xếp hạng và không truy cập database.
+// Feature đầu vào được giới hạn [0, 1]; điểm đầu ra của AI ranking là raw relevance score.
 
 import { Injectable } from '@nestjs/common';
 import type {
@@ -22,7 +22,7 @@ export type RankingPreferenceLookup = {
 export class RankingFeatureService {
     constructor(private readonly rules: RecommendationRuleService) {}
 
-    // Tính các feature độc lập để hybrid ranker có thể normalize, log và kiểm thử từng thành phần.
+    // Tính từng feature độc lập để model nhận cùng schema, còn evaluator có thể kiểm thử từng tiêu chí.
     build(
         candidate: RecommendationCandidate,
         products: PreferenceValue[],
@@ -70,7 +70,7 @@ export class RankingFeatureService {
             referenceTime,
             affinityConfig.brand.scale,
         );
-        // Trọng số đã được chuẩn hóa nên tổ hợp lồi luôn nằm trong [0, 1].
+        // Config chuẩn hóa tổng ba trọng số về 1 nên tổ hợp lồi luôn bounded trong [0, 1].
         const profileAffinity =
             profileProduct * affinityConfig.product.weight +
             profileCategory * affinityConfig.category.weight +
@@ -203,6 +203,7 @@ export class RankingFeatureService {
         relationType?: 'CO_VIEW' | 'CO_CART' | 'CO_PURCHASE',
     ): number {
         const scale = this.rules.getRelationScoreScale(relationType);
+        if (!Number.isFinite(scale) || scale <= 0) return 0;
         const positive = Math.max(0, Number.isFinite(rawScore) ? rawScore : 0);
         return positive / (positive + scale);
     }
@@ -215,9 +216,24 @@ export class RankingFeatureService {
         return contributions
             .filter((item) => sources.includes(item.source))
             .map((item) => {
-                const rank = item.sourceRank ?? 1;
-                const size = Math.max(item.sourceSize ?? rank, 1);
-                return this.clamp(1 - (rank - 1) / Math.max(size - 1, 1));
+                const rank = item.sourceRank;
+                const size = item.sourceSize;
+                // Thiếu rank/size thì không suy đoán candidate đang đứng đầu source.
+                if (
+                    !Number.isFinite(rank) ||
+                    !Number.isFinite(size) ||
+                    rank === undefined ||
+                    size === undefined ||
+                    rank < 1 ||
+                    size < 1 ||
+                    rank > size
+                ) {
+                    return 0;
+                }
+                // Hạng 1 có điểm 1, hạng cuối 0; source chỉ có một item nhận điểm 1.
+                return size === 1
+                    ? 1
+                    : this.clamp(1 - (rank - 1) / (size - 1));
             })
             .reduce((max, value) => Math.max(max, value), 0);
     }
@@ -277,7 +293,7 @@ export class RankingFeatureService {
         };
     }
 
-    // Clamp tập trung giúp mọi feature và penalty giữ đúng invariant của weighted policy.
+    // Clamp tập trung giữ feature trong schema [0, 1] trước khi gửi đến model.
     private clamp(value: number): number {
         return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
     }

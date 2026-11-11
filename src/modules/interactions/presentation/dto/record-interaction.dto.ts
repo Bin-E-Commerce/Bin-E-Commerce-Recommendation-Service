@@ -94,6 +94,6 @@ export class RecordInteractionDto {
     recommendationPolicyVersion?: string;
 
     @IsOptional()
-    @IsIn(['HYBRID', 'ML_HYBRID'])
-    recommendationRankingMode?: 'HYBRID' | 'ML_HYBRID';
+    @IsIn(['AI_MODEL', 'HYBRID', 'ML_HYBRID'])
+    recommendationRankingMode?: 'AI_MODEL' | 'HYBRID' | 'ML_HYBRID';
 }

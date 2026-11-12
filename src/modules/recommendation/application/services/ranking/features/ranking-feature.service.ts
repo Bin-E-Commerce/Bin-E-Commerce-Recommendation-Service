@@ -76,9 +76,13 @@ export class RankingFeatureService {
             profileCategory * affinityConfig.category.weight +
             profileBrand * affinityConfig.brand.weight;
         const sessionContext = this.sessionScore(candidate, context);
+        // Dữ liệu sales lỗi chỉ làm mất riêng tín hiệu sales; không được xóa hạng nguồn hợp lệ.
+        const totalSold = Number.isFinite(candidate.product.totalSold)
+            ? Math.max(0, candidate.product.totalSold)
+            : 0;
         const popularity = this.clamp(
             Math.max(
-                Math.log1p(Math.max(0, candidate.product.totalSold)) / 12,
+                Math.log1p(totalSold) / 12,
                 this.sourceRankScore(contributions, [
                     'TRENDING',
                     'BEST_SELLING',
@@ -213,7 +217,13 @@ export class RankingFeatureService {
         const scale = this.rules.getRelationScoreScale(relationType);
         if (!Number.isFinite(scale) || scale <= 0) return 0;
         const positive = Math.max(0, Number.isFinite(rawScore) ? rawScore : 0);
-        return positive / (positive + scale);
+        // Chia tỷ số nhỏ hơn cho tổng để phép cộng hai số hữu hạn lớn không tràn Infinity.
+        if (positive >= scale) {
+            const inverseRatio = scale / positive;
+            return 1 / (1 + inverseRatio);
+        }
+        const ratio = positive / scale;
+        return ratio / (1 + ratio);
     }
 
     // Source rank bổ sung tín hiệu cho các source catalog vốn chỉ có danh sách đã sắp xếp.
@@ -257,13 +267,14 @@ export class RankingFeatureService {
         return 0.1;
     }
 
-    // Quality kết hợp rating, độ tin cậy review và stock; product không hợp lệ vẫn bị filtering loại trước đó.
+    // Quality kết hợp rating, lượng review log-scale và stock; eligibility vẫn do catalog filter quyết định.
     private qualityScore(candidate: RecommendationCandidate): number {
         const rating = this.clamp(Number(candidate.product.ratingAvg ?? 0) / 5);
-        const reviews = this.clamp(
-            Math.log1p(Math.max(0, candidate.product.reviewCount)) /
-                Math.log1p(100),
-        );
+        // Count lỗi chỉ bỏ tín hiệu review; không để NaN/Infinity xóa rating và eligibility hợp lệ.
+        const reviewCount = Number.isFinite(candidate.product.reviewCount)
+            ? Math.max(0, candidate.product.reviewCount)
+            : 0;
+        const reviews = this.clamp(Math.log1p(reviewCount) / Math.log1p(100));
         return this.clamp(
             rating * 0.55 +
                 reviews * 0.25 +

@@ -149,6 +149,26 @@ describe('RankingFeatureService', () => {
             expect(mockRules.getRelationScoreScale).toHaveBeenCalledTimes(1);
         });
 
+        // Cùng hai số hữu hạn cực lớn vẫn cho đúng tỷ lệ 1/2 mà không tràn mẫu số.
+        it('should normalize large finite relation values without overflow', () => {
+            // Arrange
+            mockRules.getRelationScoreScale.mockReturnValue(Number.MAX_VALUE);
+            const candidate = createCandidate([
+                {
+                    source: 'CO_BEHAVIOR',
+                    rawScore: Number.MAX_VALUE,
+                    reasonCode: 'CO_VIEW',
+                    relationType: 'CO_VIEW',
+                },
+            ]);
+
+            // Act
+            const result = target.build(candidate, [], [], [], null);
+
+            // Assert
+            expect(result.coBehavior).toBeCloseTo(0.5);
+        });
+
         it('should decay a negative preference before applying the penalty', () => {
             // Arrange
             const candidate = createCandidate([]);
@@ -382,6 +402,31 @@ describe('RankingFeatureService', () => {
             expect(result.semanticSimilarity).toBe(1);
         });
 
+        // Semantic lấy contribution cosine lớn nhất sau clamp; score âm và source khác không cộng điểm.
+        it('should clamp negative semantic scores and take the strongest semantic contribution', () => {
+            const candidate = createCandidate([
+                {
+                    source: 'SEMANTIC_SIMILARITY',
+                    rawScore: -0.3,
+                    reasonCode: 'SIMILAR',
+                },
+                {
+                    source: 'SEMANTIC_SIMILARITY',
+                    rawScore: 0.7,
+                    reasonCode: 'SIMILAR',
+                },
+                {
+                    source: 'TRENDING',
+                    rawScore: 0.95,
+                    reasonCode: 'POPULAR',
+                },
+            ]);
+
+            const result = target.build(candidate, [], [], [], null);
+
+            expect(result.semanticSimilarity).toBeCloseTo(0.7);
+        });
+
         // Co-behavior dùng hàm tăng bão hòa, không âm và không vượt một.
         it('should keep co-behavior monotonic and bounded', () => {
             const zero = target.build(
@@ -416,6 +461,49 @@ describe('RankingFeatureService', () => {
             expect(zero.coBehavior).toBe(0);
             expect(larger.coBehavior).toBeGreaterThan(zero.coBehavior);
             expect(larger.coBehavior).toBeLessThan(1);
+        });
+
+        // Reducer max được áp dụng sau chuẩn hóa riêng từng relation, không theo raw score hoặc tổng.
+        it('should take the maximum after normalizing mixed relation types', () => {
+            const candidate = createCandidate([
+                {
+                    source: 'CO_BEHAVIOR',
+                    rawScore: 2,
+                    reasonCode: 'CO_VIEW',
+                    relationType: 'CO_VIEW',
+                },
+                {
+                    source: 'CO_BEHAVIOR',
+                    rawScore: 6,
+                    reasonCode: 'CO_PURCHASE',
+                    relationType: 'CO_PURCHASE',
+                },
+            ]);
+
+            const result = target.build(candidate, [], [], [], null);
+
+            expect(result.coBehavior).toBeCloseTo(2 / 3);
+        });
+
+        // Score âm hoặc không hữu hạn không phải bằng chứng quan hệ dương và phải đóng góp 0.
+        it.each([
+            -1,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            Number.NEGATIVE_INFINITY,
+        ])('should map invalid co-behavior scores %s to zero', (rawScore) => {
+            const candidate = createCandidate([
+                {
+                    source: 'CO_BEHAVIOR',
+                    rawScore,
+                    reasonCode: 'CO_VIEW',
+                    relationType: 'CO_VIEW',
+                },
+            ]);
+
+            const result = target.build(candidate, [], [], [], null);
+
+            expect(result.coBehavior).toBe(0);
         });
 
         // Popularity lấy tín hiệu lớn hơn giữa doanh số log-scale và vị trí source hợp lệ.
@@ -454,6 +542,34 @@ describe('RankingFeatureService', () => {
             expect(missingListSize.popularity).toBeCloseTo(Math.log1p(10) / 12);
         });
 
+        // Sales không hữu hạn được thay riêng bằng 0 để giữ thứ hạng nguồn đáng tin cậy.
+        it.each([
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            Number.NEGATIVE_INFINITY,
+        ])(
+            'should preserve a valid popularity source rank when totalSold is %s',
+            (totalSold) => {
+                // Arrange
+                const candidate = createCandidate([
+                    {
+                        source: 'TRENDING',
+                        rawScore: 0,
+                        reasonCode: 'TRENDING',
+                        sourceRank: 2,
+                        sourceSize: 5,
+                    },
+                ]);
+                candidate.product.totalSold = totalSold;
+
+                // Act
+                const result = target.build(candidate, [], [], [], null);
+
+                // Assert
+                expect(result.popularity).toBeCloseTo(0.75);
+            },
+        );
+
         // Freshness không tăng khi tuổi sản phẩm lớn hơn; các mốc bucket cố định phải khớp code.
         it('should assign freshness by the documented age buckets', () => {
             const now = new Date('2026-11-09T00:00:00.000Z');
@@ -490,14 +606,79 @@ describe('RankingFeatureService', () => {
             expect(fresh.freshness).toBeGreaterThan(old.freshness);
         });
 
+        // Kiểm tra ngay tại và sau mọi ngưỡng để bắt sai lệch điều kiện <= của bucket.
+        it.each([
+            [0, 1],
+            [1, 1],
+            [1.0001, 0.8],
+            [7, 0.8],
+            [7.0001, 0.55],
+            [30, 0.55],
+            [30.0001, 0.3],
+            [90, 0.3],
+            [90.0001, 0.1],
+            [-1, 1],
+        ])(
+            'should preserve freshness bucket at age %s days',
+            (ageDays, expected) => {
+                const now = new Date('2026-11-09T00:00:00.000Z');
+                const candidate = createCandidate([]);
+                candidate.product.createdAt = new Date(
+                    now.getTime() - ageDays * 86_400_000,
+                );
+
+                const result = target.build(
+                    candidate,
+                    [],
+                    [],
+                    [],
+                    null,
+                    undefined,
+                    now,
+                );
+
+                expect(result.freshness).toBeCloseTo(expected, 4);
+            },
+        );
+
         // Quality gồm ba đầu vào chuẩn hóa; sản phẩm đạt cực đại chỉ khi từng thành phần đạt cực đại.
-        it('should combine normalized rating, review confidence, and availability', () => {
+        it('should combine normalized rating, log-scaled review count, and availability', () => {
             const candidate = createCandidate([]);
 
             const result = target.build(candidate, [], [], [], null);
 
             expect(result.quality).toBe(1);
         });
+
+        // Golden case đối chiếu trực tiếp ba thành phần với công thức quality đã ghi trong tài liệu.
+        it('should match the documented quality formula for a partial rating and review count', () => {
+            const candidate = createCandidate([]);
+            candidate.product.ratingAvg = '4.5';
+            candidate.product.reviewCount = 25;
+
+            const result = target.build(candidate, [], [], [], null);
+            const expected =
+                0.55 * 0.9 + (0.25 * Math.log1p(25)) / Math.log1p(100) + 0.2;
+
+            expect(result.quality).toBeCloseTo(expected, 8);
+        });
+
+        // Count review lỗi chỉ được quy về 0; rating và stock hợp lệ tiếp tục đóng góp điểm.
+        it.each([
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            Number.NEGATIVE_INFINITY,
+        ])(
+            'should preserve valid quality signals when review count is %s',
+            (reviewCount) => {
+                const candidate = createCandidate([]);
+                candidate.product.reviewCount = reviewCount;
+
+                const result = target.build(candidate, [], [], [], null);
+
+                expect(result.quality).toBeCloseTo(0.75);
+            },
+        );
 
         // Exploration là cờ nhị phân có điều kiện, không khuyến khích candidate khi profile đã mạnh.
         it('should enable exploration only for weak profile affinity', () => {
@@ -526,6 +707,33 @@ describe('RankingFeatureService', () => {
                     referenceTime,
                 ).exploration,
             ).toBe(0);
+        });
+
+        // Ngưỡng dùng điều kiện profileAffinity > 0.4; tại đúng 0.4 nguồn EXPLORE vẫn được bật.
+        it('should allow exploration when profile affinity is exactly at the threshold', () => {
+            const candidate = createCandidate([]);
+            candidate.sources.add('EXPLORE');
+            const preference = createPreference(
+                'PRODUCT',
+                'product-1',
+                6.4,
+                0,
+                new Date('2026-11-09T00:00:00.000Z'),
+            );
+            const referenceTime = new Date('2026-11-09T00:00:00.000Z');
+
+            const result = target.build(
+                candidate,
+                [preference],
+                [],
+                [],
+                null,
+                undefined,
+                referenceTime,
+            );
+
+            expect(result.profileAffinity).toBeCloseTo(0.4);
+            expect(result.exploration).toBe(1);
         });
 
         // Từng feature tạo cho LambdaRank phải là số hữu hạn trong miền huấn luyện [0, 1].

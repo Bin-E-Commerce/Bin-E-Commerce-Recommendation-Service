@@ -120,6 +120,8 @@ export class SemanticCandidateService {
                     ),
                 new Array<number>(length).fill(0),
             );
+            // Các anchor đối hướng có thể triệt tiêu; cosine của vector 0 không xác định nên dừng trước Qdrant.
+            if (!centroid.some((value) => value !== 0)) return [];
             const results = await this.vector.searchSimilarProducts(
                 centroid,
                 Math.min(input.limit, 60),

@@ -100,4 +100,55 @@ describe('SemanticCandidateService', () => {
         expect(vector.getProductVector).not.toHaveBeenCalled();
         expect(vector.searchSimilarProducts).not.toHaveBeenCalled();
     });
+
+    // Anchor đối hướng có thể tạo centroid 0; service phải bỏ query vì cosine không xác định.
+    it('should skip vector search when weighted anchors cancel to a zero centroid', async () => {
+        // Arrange
+        const vector = {
+            getProductVector: jest.fn(async (productId: string) => ({
+                vector: productId === 'product-a' ? [1, 0] : [-1, 0],
+                contentHash: `hash-${productId}`,
+                modelVersion: 'model-v1',
+            })),
+            searchSimilarProducts: jest.fn(async () => []),
+        };
+        const rules = { isCandidateSourceEnabled: jest.fn(() => true) };
+        const catalog = {
+            findSnapshots: jest.fn(async (productIds: string[]) =>
+                productIds.map((productId) => ({
+                    productId,
+                    contentHash: `hash-${productId}`,
+                })),
+            ),
+        };
+        const service = new SemanticCandidateService(
+            vector as never,
+            catalog as never,
+            rules as never,
+        );
+
+        // Act
+        const result = await service.findCandidates({
+            recentProductIds: ['product-a', 'product-b'],
+            recentProductSignals: [
+                {
+                    productId: 'product-a',
+                    weight: 1,
+                    interactionType: 'PRODUCT_VIEWED',
+                },
+                {
+                    productId: 'product-b',
+                    weight: 1,
+                    interactionType: 'PRODUCT_VIEWED',
+                },
+            ],
+            profileProductIds: [],
+            excludeProductIds: [],
+            limit: 10,
+        });
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(vector.searchSimilarProducts).not.toHaveBeenCalled();
+    });
 });

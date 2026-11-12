@@ -20,6 +20,23 @@ export interface SemanticVectorResult {
     modelVersion: string;
 }
 
+type QdrantVectorConfiguration = {
+    size?: number;
+    distance?: 'Cosine' | 'Dot' | 'Euclid';
+};
+type QdrantCollectionInfo = {
+    result?: {
+        points_count?: number;
+        config?: {
+            params?: {
+                vectors?:
+                    | QdrantVectorConfiguration
+                    | Record<string, QdrantVectorConfiguration>;
+            };
+        };
+    };
+};
+
 // Port/adapter HTTP cho Qdrant, không kéo SDK vào business layer và có thể đổi sang managed adapter sau này.
 @Injectable()
 export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
@@ -30,7 +47,8 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     private readonly collectionVersion: string;
     private readonly modelVersion: string;
     private readonly dimensions: number;
-    private readonly distance: 'Cosine' | 'Dot' | 'Euclid';
+    private readonly distance: 'Cosine';
+    private readonly distanceSupported: boolean;
     private readonly timeoutMs: number;
     private readonly initializationRetryMs: number;
     private readonly physicalCollection: string;
@@ -73,10 +91,9 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             'QDRANT_DISTANCE',
             'Cosine',
         );
-        this.distance =
-            configuredDistance === 'Dot' || configuredDistance === 'Euclid'
-                ? configuredDistance
-                : 'Cosine';
+        // Feature semantic cần score cosine; metric khác được đánh dấu unavailable để service vẫn fail-soft.
+        this.distanceSupported = configuredDistance === 'Cosine';
+        this.distance = 'Cosine';
         const configuredTimeout = Number(
             config.get<string>('QDRANT_TIMEOUT_MS', '500'),
         );
@@ -124,6 +141,9 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     private async initializeCollection(): Promise<boolean> {
         const collection = this.physicalCollection;
         try {
+            // Không tạo collection/query với metric mà ranker không thể diễn giải thành semantic similarity.
+            if (!this.distanceSupported)
+                throw new Error('QDRANT_DISTANCE_MUST_BE_COSINE');
             const exists = await this.request(`/collections/${collection}`);
             if (!exists.ok) {
                 const created = await this.request(
@@ -160,34 +180,13 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             const collectionInfo = await this.request(
                 `/collections/${collection}`,
             );
-            const collectionBody = collectionInfo.ok
-                ? ((await collectionInfo.json()) as {
-                      result?: {
-                          points_count?: number;
-                          config?: {
-                              params?: {
-                                  vectors?:
-                                      | { size?: number }
-                                      | Record<string, { size?: number }>;
-                              };
-                          };
-                      };
-                  })
-                : { result: { points_count: 0 } };
-            const vectorsConfig =
-                collectionBody.result?.config?.params?.vectors;
-            const configuredSize =
-                vectorsConfig && 'size' in vectorsConfig
-                    ? vectorsConfig.size
-                    : undefined;
-            if (
-                configuredSize !== undefined &&
-                configuredSize !== this.dimensions
-            ) {
+            if (!collectionInfo.ok)
                 throw new Error(
-                    `QDRANT_VECTOR_SIZE_MISMATCH_${configuredSize}_${this.dimensions}`,
+                    `QDRANT_COLLECTION_INFO_FAILED_${collectionInfo.status}`,
                 );
-            }
+            const collectionBody =
+                (await collectionInfo.json()) as QdrantCollectionInfo;
+            this.assertCollectionCompatibility(collection, collectionBody);
             const indexedPoints = collectionBody.result?.points_count ?? 0;
             const canPromoteVersion =
                 this.aliasPromotionEnabled && indexedPoints > 0;
@@ -208,6 +207,24 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
                           alias_name: this.alias,
                       },
                   };
+            const servingCollection = action
+                ? collection
+                : (currentAlias?.collection_name ?? collection);
+            if (servingCollection !== collection) {
+                const servingCollectionInfo = await this.request(
+                    `/collections/${servingCollection}`,
+                );
+                if (!servingCollectionInfo.ok)
+                    throw new Error(
+                        `QDRANT_ACTIVE_COLLECTION_INFO_FAILED_${servingCollectionInfo.status}`,
+                    );
+                const servingCollectionBody =
+                    (await servingCollectionInfo.json()) as QdrantCollectionInfo;
+                this.assertCollectionCompatibility(
+                    servingCollection,
+                    servingCollectionBody,
+                );
+            }
             if (
                 currentAlias &&
                 currentAlias.collection_name !== collection &&
@@ -240,6 +257,27 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             );
             return false;
         }
+    }
+
+    // Kiểm tra cả collection vật lý lẫn collection alias đang phục vụ để raw score luôn giữ cosine semantics.
+    private assertCollectionCompatibility(
+        collection: string,
+        body: QdrantCollectionInfo,
+    ): void {
+        const vectorsConfig = body.result?.config?.params?.vectors;
+        // Chỉ collection một vector không tên mới khớp contract tạo collection của adapter này.
+        if (!vectorsConfig || !('size' in vectorsConfig))
+            throw new Error(`QDRANT_VECTOR_CONFIG_MISSING_${collection}`);
+        // Dimension phải khớp embedding provider trước khi query hoặc ghi vector vào collection.
+        if (vectorsConfig.size !== this.dimensions)
+            throw new Error(
+                `QDRANT_VECTOR_SIZE_MISMATCH_${vectorsConfig.size}_${this.dimensions}`,
+            );
+        // Alias cũ có thể trỏ collection được tạo với metric khác cấu hình hiện tại.
+        if (vectorsConfig.distance !== this.distance)
+            throw new Error(
+                `QDRANT_DISTANCE_MISMATCH_${vectorsConfig.distance}_${this.distance}`,
+            );
     }
 
     // Upsert vector kèm payload filter; PostgreSQL vẫn là nguồn dữ liệu card/business state.

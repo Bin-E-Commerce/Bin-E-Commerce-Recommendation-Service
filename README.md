@@ -1008,20 +1008,20 @@ Use [.env.example](./.env.example) as the canonical local template.
 
 ### Candidate and embeddings
 
-| Variable                       | Purpose                               |
-| ------------------------------ | ------------------------------------- |
-| CANDIDATE_PIPELINE_V3_ENABLED  | Master switch for advanced candidates |
-| SEMANTIC_CANDIDATES_ENABLED    | Semantic candidate source             |
-| CO_BEHAVIOR_CANDIDATES_ENABLED | Relation candidate source             |
-| EMBEDDING_DISPATCHER_ENABLED   | Enable embedding job dispatch         |
-| EMBEDDING_MODEL                | Embedding provider model              |
-| EMBEDDING_MODEL_VERSION        | Stored vector version                 |
-| QDRANT_URL                     | Qdrant endpoint                       |
-| QDRANT_COLLECTION_ALIAS        | Active collection alias               |
-| QDRANT_COLLECTION_VERSION      | Physical collection version           |
-| QDRANT_VECTOR_SIZE             | Vector dimension                      |
-| QDRANT_DISTANCE                | Cosine, Dot, or Euclid                |
-| QDRANT_TIMEOUT_MS              | Fail-soft vector request timeout      |
+| Variable                       | Purpose                                         |
+| ------------------------------ | ----------------------------------------------- |
+| CANDIDATE_PIPELINE_V3_ENABLED  | Master switch for advanced candidates           |
+| SEMANTIC_CANDIDATES_ENABLED    | Semantic candidate source                       |
+| CO_BEHAVIOR_CANDIDATES_ENABLED | Relation candidate source                       |
+| EMBEDDING_DISPATCHER_ENABLED   | Enable embedding job dispatch                   |
+| EMBEDDING_MODEL                | Embedding provider model                        |
+| EMBEDDING_MODEL_VERSION        | Stored vector version                           |
+| QDRANT_URL                     | Qdrant endpoint                                 |
+| QDRANT_COLLECTION_ALIAS        | Active collection alias                         |
+| QDRANT_COLLECTION_VERSION      | Physical collection version                     |
+| QDRANT_VECTOR_SIZE             | Vector dimension                                |
+| QDRANT_DISTANCE                | Cosine only; required by semantic ranking score |
+| QDRANT_TIMEOUT_MS              | Fail-soft vector request timeout                |
 
 ### Profile and ranking
 

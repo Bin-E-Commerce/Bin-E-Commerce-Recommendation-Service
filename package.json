@@ -8,6 +8,13 @@
         "dev": "nest start --watch",
         "ranking-simulate": "node dist/services/recommendation-service/src/scripts/generate-ranking-synthetic-dataset.js",
         "ranking-session-context-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-session-context-formulas.js",
+        "ranking-criterion-3-semantic-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-3-semantic.js",
+        "ranking-criterion-4-cobehavior-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-4-cobehavior.js",
+        "ranking-criterion-5-popularity-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-5-popularity.js",
+        "ranking-criterion-6-freshness-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-6-freshness.js",
+        "ranking-criterion-7-quality-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-7-quality.js",
+        "ranking-criterion-8-exploration-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-8-exploration.js",
+        "ranking-criteria-3-8-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-3-semantic.js && node dist/services/recommendation-service/src/scripts/evaluate-criterion-4-cobehavior.js && node dist/services/recommendation-service/src/scripts/evaluate-criterion-5-popularity.js && node dist/services/recommendation-service/src/scripts/evaluate-criterion-6-freshness.js && node dist/services/recommendation-service/src/scripts/evaluate-criterion-7-quality.js && node dist/services/recommendation-service/src/scripts/evaluate-criterion-8-exploration.js",
         "lint": "eslint src --ext .ts",
         "type-check": "tsc --noEmit",
         "test": "jest --passWithNoTests"

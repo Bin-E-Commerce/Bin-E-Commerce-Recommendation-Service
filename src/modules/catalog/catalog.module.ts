@@ -14,6 +14,7 @@ import { SemanticContentService } from '@/modules/catalog/application/services/s
 import { VectorIndexService } from '@/modules/catalog/application/services/vector/vector-index.service';
 import { EmbeddingConsumerService } from '@/kafka/consumers/catalog/embedding-consumer.service';
 import { CatalogSyncCheckpointRepository } from '@/modules/catalog/infrastructure/repositories/catalog-sync-checkpoint.repository';
+import { InternalServiceTokenGuard } from '@/common/security/internal-service-token.guard';
 
 @Module({
     imports: [
@@ -27,6 +28,7 @@ import { CatalogSyncCheckpointRepository } from '@/modules/catalog/infrastructur
     providers: [
         CatalogProductRepository,
         CatalogSyncCheckpointRepository,
+        InternalServiceTokenGuard,
         EmbeddingJobRepository,
         EmbeddingJobService,
         SemanticContentService,

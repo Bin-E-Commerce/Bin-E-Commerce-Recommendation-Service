@@ -333,6 +333,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         vector: number[],
         limit: number,
         excludeProductIds: string[] = [],
+        inStockOnly = true,
     ): Promise<SemanticSearchResult[]> {
         if (!(await this.ensureCollection())) return [];
         if (
@@ -341,6 +342,18 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
         )
             return [];
         const excluded = new Set(excludeProductIds);
+        const requiredPayloadFilters: Array<Record<string, unknown>> = [
+            { key: 'status', match: { value: 'ACTIVE' } },
+            { key: 'embeddingStatus', match: { value: 'READY' } },
+            { key: 'modelVersion', match: { value: this.modelVersion } },
+        ];
+        // Recommendation mặc định vẫn chỉ lấy hàng còn kho; search có thể nhận hàng hết kho nếu người dùng không lọc.
+        if (inStockOnly) {
+            requiredPayloadFilters.push({
+                key: 'isInStock',
+                match: { value: true },
+            });
+        }
         const response = await this.request(
             `/collections/${this.alias}/points/search`,
             {
@@ -349,20 +362,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
                     vector,
                     limit: Math.min(Math.max(limit, 1), 60),
                     with_payload: true,
-                    filter: {
-                        must: [
-                            { key: 'status', match: { value: 'ACTIVE' } },
-                            { key: 'isInStock', match: { value: true } },
-                            {
-                                key: 'embeddingStatus',
-                                match: { value: 'READY' },
-                            },
-                            {
-                                key: 'modelVersion',
-                                match: { value: this.modelVersion },
-                            },
-                        ],
-                    },
+                    filter: { must: requiredPayloadFilters },
                 }),
             },
         );

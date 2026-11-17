@@ -15,7 +15,7 @@ export class RecommendationPolicyEntity {
     @PrimaryGeneratedColumn('uuid')
     id!: string;
 
-    // Version immutable giúp cache, trace và rollback luôn tham chiếu được đúng policy đã dùng.
+    // Version immutable giúp cache, trace và audit tham chiếu đúng cấu hình lịch sử.
     @Column({ type: 'varchar', length: 128 })
     version!: string;
 

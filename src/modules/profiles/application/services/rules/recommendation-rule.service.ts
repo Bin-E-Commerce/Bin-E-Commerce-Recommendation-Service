@@ -59,7 +59,7 @@ export class RecommendationRuleService {
         this.getProfileHalfLifeDays();
     }
 
-    // Cập nhật policy đã được admin validate; runtime override giúp thay đổi ranking mà không cần restart service.
+    // Đồng bộ version dùng cho cache và attribution; giá trị này không thay đổi feature hay model score.
     setRuntimePolicy(policy: RuntimeRecommendationPolicy | null): void {
         this.runtimePolicy = policy;
     }
@@ -230,7 +230,7 @@ export class RecommendationRuleService {
         };
     }
 
-    // Admin và bootstrap chỉ cần policy version; model objective/weights thuộc artifact đã train.
+    // Bootstrap chỉ cần version hiện tại để đồng bộ cache và attribution giữa các instance.
     getPolicySnapshot(): { version: string } {
         return { version: this.getRuleVersion() };
     }

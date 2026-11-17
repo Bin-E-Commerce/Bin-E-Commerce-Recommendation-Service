@@ -514,26 +514,6 @@ export class RecommendationAdminRepository {
         });
     }
 
-    // Archive và insert policy mới trong cùng transaction để không có khoảng trống active khi DB lỗi giữa chừng.
-    activatePolicy(
-        policy: Partial<RecommendationPolicyEntity>,
-    ): Promise<RecommendationPolicyEntity> {
-        return this.dataSource.transaction(async (manager) => {
-            const policyRepository = manager.getRepository(
-                RecommendationPolicyEntity,
-            );
-            // PostgreSQL advisory lock serialize hai admin update/rollback giữa nhiều instance của Recommendation Service.
-            await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-                'recommendation-policy-active',
-            ]);
-            await policyRepository.update(
-                { status: 'ACTIVE' },
-                { status: 'ARCHIVED' },
-            );
-            return policyRepository.save(policy);
-        });
-    }
-
     // Aggregate attribution theo ranking mode thực tế để Admin đo kết quả đã phục vụ, không phụ thuộc actor assignment.
     async getRankingPerformance(from: Date, to: Date) {
         const rows = await this.interactions

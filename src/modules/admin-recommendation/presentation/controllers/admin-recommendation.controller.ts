@@ -158,7 +158,7 @@ export class AdminRecommendationController {
         description: [
             'Mục đích: cho Admin xác nhận Recommendation Service chỉ dùng model LambdaRank và xem artifact có sẵn sàng hay không.',
             'Đầu vào: không có query hoặc body.',
-            'Kết quả: rankingMode, objective, version, trạng thái candidate source và trạng thái artifact LambdaRank. Endpoint không trả hoặc nhận trọng số Standard/AI blend.',
+            'Kết quả: rankingMode, objective, version, trạng thái candidate source và trạng thái artifact LambdaRank; endpoint chỉ đọc runtime.',
             'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_READ.',
         ].join('\n\n'),
     })
@@ -188,9 +188,9 @@ export class AdminRecommendationController {
     @ApiOperation({
         summary: 'Xem lịch sử các phiên bản policy',
         description: [
-            'Mục đích: audit các lần thay đổi cấu hình ranking và xác định version có thể dùng làm mốc rollback.',
+            'Mục đích: kiểm toán các phiên bản cấu hình ranking đã được ghi nhận.',
             'Đầu vào: không có query hoặc body.',
-            'Kết quả: tối đa 50 phiên bản gần nhất, gồm version, trạng thái, config, người thay đổi, lý do và thời điểm tạo; endpoint chỉ đọc, không thay đổi policy runtime.',
+            'Kết quả: tối đa 50 phiên bản gần nhất, gồm version, trạng thái, config, người thay đổi, lý do và thời điểm tạo; endpoint chỉ đọc và không thay đổi runtime.',
             'Quyền truy cập: cần internal token hợp lệ và quyền ADMIN_RECOMMENDATION_POLICY_READ.',
         ].join('\n\n'),
     })

@@ -357,7 +357,7 @@ npm run start
 - catalog handles local product projection and embedding jobs;
 - relations handles co-behavior graph signals;
 - maintenance handles replay, retention, and operational repair;
-- admin-recommendation handles analytics and ranking policy control;
+- admin-recommendation exposes analytics and read-only ranking status;
 - Kafka and Redis modules provide infrastructure adapters.
 
 ---
@@ -549,7 +549,7 @@ Training groups candidates by recommendation `requestId`, uses binary relevance 
 
 ### Failure contract
 
-If AI Service is unreachable, no valid artifact is loaded, prediction is malformed, scores are non-finite, or item IDs do not match the request, Recommendation Service returns an unavailable error. It does not use a Standard/Hybrid scoring fallback or attach a false model version to the response. Admin model status distinguishes unreachable service from reachable service without a ready artifact.
+If AI Service is unreachable, no valid artifact is loaded, prediction is malformed, scores are non-finite, or item IDs do not match the request, Recommendation Service returns an unavailable error. It never substitutes another scoring method or attaches a false model version to the response. Admin model status distinguishes unreachable service from reachable service without a ready artifact.
 
 ### Response observability
 
@@ -557,7 +557,7 @@ Successful responses include the request ID, strategy, profile state, rule versi
 
 ## 13. Ranking observability
 
-The Admin Recommendation Center exposes read-only ranking status and historical attribution analytics. It shows whether AI Service is reachable, whether a compatible artifact is ready, the model version, and the feature count. It does not tune ranking weights, blend scores, or roll back a formula-based policy.
+The Admin Recommendation Center exposes read-only ranking status and historical attribution analytics. It shows whether AI Service is reachable, whether a compatible artifact is ready, the model version, and the feature count. Serving configuration is managed through the model training and deployment process.
 
 Request counts and click/cart/purchase events in this dashboard are operational analytics. They are not offline ranking metrics and must not be presented as proof that a formula or model improved ranking quality.
 
@@ -848,7 +848,7 @@ Analytics ranges default to the most recent 30 days and are limited to 31 days.
 }
 ```
 
-The config endpoint only reports model readiness and candidate-source switches. The history endpoint is for reading archived configuration records; ranking weight updates and policy rollback are not supported.
+The config endpoint only reports model readiness and candidate-source switches. The history endpoint exposes stored configuration records for audit; runtime policy updates are not supported.
 
 Candidate-source ENV switches are operational controls. They do not change the final scorer: every successful request uses LambdaRank.
 
@@ -1276,11 +1276,11 @@ Session context or result-cache reads may be degraded, but durable profile and c
 
 ### Can Admin change AI service URL or model path?
 
-No. Those are infrastructure settings owned by deployment configuration. Admin controls ranking policy; candidate sources are controlled only by operational ENV switches.
+No. The Admin API only reads model readiness and candidate-source status. Service URLs, model paths, and candidate-source switches are owned by deployment configuration.
 
-### Can Admin edit ranking weights or the model path?
+### Can Admin change how products are ranked?
 
-No. Admin only reads model readiness and archived policy history. Model path/version are deployment configuration, and final scoring always uses LambdaRank.
+No. Admin only reads model readiness and policy history. Model path/version are deployment configuration, and final scoring always uses LambdaRank.
 
 ### Is a 202 interaction response proof that the profile has updated?
 
@@ -1288,7 +1288,7 @@ No. It confirms that Kafka accepted the event. Projection, relation, popularity,
 
 ### Can an old policy be edited in place?
 
-No. Legacy policy history is read-only and retained for audit; the current admin API does not update or roll back those scoring rules.
+No. Stored policy history is read-only and retained for audit; it does not affect current LambdaRank serving.
 
 ---
 

@@ -268,7 +268,7 @@ describe('RecommendationQueryService', () => {
         expect(mockMlRanking.predict).toHaveBeenCalledTimes(1);
     });
 
-    // Contract version mới tách cache cũ để không trả lại score Standard đã lưu trước đây.
+    // Contract version mới tách cache response được tạo bởi phiên bản ranker cũ.
     it('should use a new cache contract for model-only responses', async () => {
         // Arrange
         const input = { surface: 'home' as const, page: 1, pageSize: 24 };

@@ -56,7 +56,7 @@ describe('RecommendationRankingService', () => {
         embeddingDimensions: null,
     });
 
-    // Candidate attribution chỉ được dùng làm tie-break ổn định sau raw score.
+    // Tạo candidate có attribution nguồn tối thiểu; nguồn không tham gia điểm rank.
     const createCandidate = (
         product: RecommendationCatalogProduct,
     ): RecommendationCandidate => ({

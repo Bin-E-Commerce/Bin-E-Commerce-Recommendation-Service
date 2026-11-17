@@ -96,7 +96,7 @@ export class CandidateGenerationService {
             },
             { source: 'CO_BEHAVIOR', run: () => this.fromRelations(input) },
         ];
-        // Personalized/session requests vẫn có trending làm baseline; newest/explore/best-selling chỉ chạy cold-start để giảm query thừa.
+        // Trending bổ sung ứng viên cho request cá nhân hóa; newest/explore/best-selling chỉ chạy cold-start.
         if (input.strategy === 'COLD_START') {
             tasks.splice(
                 2,

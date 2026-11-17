@@ -1,4 +1,4 @@
-// Module này gom Admin analytics và policy control theo bounded context; không sở hữu Product/Order data.
+// Module này gom Admin analytics và trạng thái model theo bounded context; không sở hữu Product/Order data.
 
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';

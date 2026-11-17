@@ -1,4 +1,4 @@
-// Application service cho Admin Recommendation Center; kiểm tra input, quyền nghiệp vụ policy và gọi repository read/write.
+// Application service cho Admin Recommendation Center; tổng hợp analytics và trạng thái model từ các nguồn sở hữu.
 
 import {
     BadRequestException,
@@ -91,7 +91,7 @@ export class AdminRecommendationService {
         );
     }
 
-    // Trả trạng thái model và candidate source; công thức cũ không còn cấu hình ở runtime.
+    // Chỉ trả trạng thái LambdaRank và candidate source để Admin quan sát runtime, không thay đổi serving.
     async getPolicy() {
         const candidateStatus = this.rules.getCandidateSourceStatus();
         const model = await this.mlRanking.getStatus();
@@ -109,7 +109,7 @@ export class AdminRecommendationService {
         };
     }
 
-    // Lịch sử policy chỉ trả metadata và config đã normalize để Admin có thể audit/rollback minh bạch.
+    // Lịch sử policy chỉ trả metadata và config đã normalize để Admin kiểm toán thay đổi trước đây.
     async getPolicyHistory() {
         const policies = await this.repository.findPolicyHistory(50);
         return policies.map((policy) => ({

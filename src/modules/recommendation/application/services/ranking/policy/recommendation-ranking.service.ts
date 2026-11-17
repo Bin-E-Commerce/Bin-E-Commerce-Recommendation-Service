@@ -1,5 +1,4 @@
 // File này chỉ dùng AI model score để xếp candidate; diversity là ràng buộc danh sách sau xếp hạng.
-// Không có phép cộng trọng số Standard hay nhánh fallback trong serving path.
 
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
@@ -151,15 +150,14 @@ export class RecommendationRankingService {
         }
     }
 
-    // Tie-breaker ổn định giúp cache và pagination giữ thứ tự khi model trả score bằng nhau.
+    // Tie theo ID chỉ giữ thứ tự ổn định khi score bằng nhau; source count không
+    // được cộng ngầm vào kết quả ranking.
     private compareCandidates(
         left: RankedCandidate,
         right: RankedCandidate,
     ): number {
         return (
             right.score - left.score ||
-            (right.contributions?.length ?? 0) -
-                (left.contributions?.length ?? 0) ||
             left.product.productId.localeCompare(right.product.productId)
         );
     }

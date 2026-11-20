@@ -7,6 +7,7 @@
         "start": "node --max-old-space-size=128 dist/services/recommendation-service/src/main.js",
         "dev": "nest start --watch",
         "ranking-simulate": "node dist/services/recommendation-service/src/scripts/generate-ranking-synthetic-dataset.js",
+        "ranking-data-pilot": "npm run build && node dist/services/recommendation-service/src/scripts/audit-recommendation-training-pilot.js",
         "ranking-session-context-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-session-context-formulas.js",
         "ranking-criterion-3-semantic-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-3-semantic.js",
         "ranking-criterion-4-cobehavior-evaluate": "npm run build && node dist/services/recommendation-service/src/scripts/evaluate-criterion-4-cobehavior.js",

@@ -7,14 +7,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import {
+    RECOMMENDATION_FEATURE_SCHEMA_VERSION,
+    type RankingFeatureVector,
+    type RecommendationCandidate,
+} from '@/modules/recommendation/application/types/ranking/ranking.types';
 import type {
     PreferenceValue,
     SessionContext,
 } from '@/modules/profiles/application/types/profile.types';
-import type {
-    RankingFeatureVector,
-    RecommendationCandidate,
-} from '@/modules/recommendation/application/types/ranking/ranking.types';
 import {
     RankingFeatureService,
     type RankingPreferenceLookup,
@@ -36,6 +37,7 @@ export interface RecommendationMlRankingResult {
     scores: ReadonlyMap<string, number>;
     features: ReadonlyMap<string, RankingFeatureVector>;
     modelVersion: string | null;
+    featuresComputedAt: string;
 }
 
 export interface RecommendationMlRankingStatus {
@@ -126,7 +128,7 @@ export class RecommendationMlRankingService {
         }
     }
 
-    // Gọi batch LambdaRank; lỗi hoặc model chưa sẵn sàng làm request dừng thay vì tạo score thay thế.
+    // Gọi batch LambdaRank và trả lại mốc dùng chung để snapshot ghi đúng thời điểm feature được tính.
     async predict(input: {
         requestId: string;
         candidates: RecommendationCandidate[];
@@ -135,11 +137,13 @@ export class RecommendationMlRankingService {
         brands: PreferenceValue[];
         context: SessionContext | null;
     }): Promise<RecommendationMlRankingResult> {
+        const referenceTime = new Date();
         if (input.candidates.length === 0) {
             return {
                 scores: new Map(),
                 features: new Map(),
                 modelVersion: null,
+                featuresComputedAt: referenceTime.toISOString(),
             };
         }
         if (!this.token) {
@@ -156,7 +160,6 @@ export class RecommendationMlRankingService {
             input.brands,
         );
         // Dùng chung mốc giờ cho toàn candidate để tuổi preference không đổi theo thứ tự vòng lặp.
-        const referenceTime = new Date();
         const items = candidates.map((candidate) => ({
             itemId: candidate.product.productId,
             features: this.toFeatureRow(
@@ -182,7 +185,8 @@ export class RecommendationMlRankingService {
                     },
                     body: JSON.stringify({
                         requestId: input.requestId || randomUUID(),
-                        featureSchemaVersion: 'ranking-features-v3',
+                        featureSchemaVersion:
+                            RECOMMENDATION_FEATURE_SCHEMA_VERSION,
                         items,
                     }),
                     signal: controller.signal,
@@ -232,6 +236,7 @@ export class RecommendationMlRankingService {
                 scores,
                 features: featureByProductId,
                 modelVersion: scores.size > 0 ? modelVersion : null,
+                featuresComputedAt: referenceTime.toISOString(),
             };
         } catch (error) {
             this.logger.warn(

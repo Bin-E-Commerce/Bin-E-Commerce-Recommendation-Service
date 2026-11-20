@@ -23,7 +23,7 @@ export class RetentionRepository {
         let ranCleanup = false;
         while (true) {
             const batch = await this.runLocked((manager) =>
-                this.deleteInteractionBatch(
+                this.deleteRawTrainingDataBatch(
                     manager,
                     input.rawDays,
                     input.batchSize,
@@ -96,8 +96,8 @@ export class RetentionRepository {
         });
     }
 
-    // Xóa một batch theo ctid để mỗi transaction ngắn và giảm lock contention với profile/relation projector.
-    private async deleteInteractionBatch(
+    // Xóa interaction, relation signal và snapshot quá hạn theo batch cùng một mốc raw-data retention.
+    private async deleteRawTrainingDataBatch(
         manager: EntityManager,
         days: number,
         batchSize: number,
@@ -122,6 +122,16 @@ export class RetentionRepository {
                 ' RETURNING signal.event_id',
             [days, batchSize],
         )) as Array<{ event_id: string }>;
-        return Math.max(rows.length, signalRows.length);
+        const snapshotRows = (await manager.query(
+            'WITH expired AS (' +
+                ' SELECT ctid FROM recommendation_training_snapshots' +
+                " WHERE served_at < NOW() - ($1::int * INTERVAL '1 day')" +
+                ' ORDER BY served_at ASC LIMIT $2' +
+                ') DELETE FROM recommendation_training_snapshots snapshot' +
+                ' USING expired WHERE snapshot.ctid = expired.ctid' +
+                ' RETURNING snapshot.request_id',
+            [days, batchSize],
+        )) as Array<{ request_id: string }>;
+        return Math.max(rows.length, signalRows.length, snapshotRows.length);
     }
 }

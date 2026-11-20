@@ -1,6 +1,6 @@
 // Service này điều phối recommendation request: đọc context/profile, gom candidate, cache và phân trang; ranking nằm ở policy riêng.
 
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { ProfileQueryService } from '@/modules/profiles/application/services/profile/profile-query.service';
@@ -17,6 +17,7 @@ import type {
     RecommendationCandidate,
     RankingMode,
 } from '@/modules/recommendation/application/types/ranking/ranking.types';
+import { RECOMMENDATION_FEATURE_SCHEMA_VERSION } from '@/modules/recommendation/application/types/ranking/ranking.types';
 import { CandidateUnionService } from '@/modules/recommendation/application/services/candidates/union/candidate-union.service';
 import { CandidateGenerationService } from '@/modules/recommendation/application/services/candidates/generation/candidate-generation.service';
 import type { CandidateSourceResult } from '@/modules/recommendation/application/types/candidates/candidate-source.types';
@@ -24,11 +25,24 @@ import { RecommendationTrackingTokenService } from '@/modules/recommendation/app
 import { RecommendationMlRankingService } from '@/modules/recommendation/application/services/ranking/ml/recommendation-ml-ranking.service';
 import { CatalogService } from '@/modules/catalog/application/services/catalog/catalog.service';
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
+import {
+    RECOMMENDATION_TRAINING_SNAPSHOT_WRITER,
+    type RecommendationTrainingSnapshot,
+    type RecommendationTrainingSnapshotCopy,
+    type RecommendationTrainingSnapshotWriter,
+} from '@/modules/recommendation/application/types/recommendation-training-snapshot.types';
+
+const CANDIDATE_POOL_BUDGET = 300;
+const SOURCE_SNAPSHOT_ID_LIMIT = 300;
 
 @Injectable()
+// Service điều phối request và snapshot point-in-time; writer là adapter optional để test/unit không phụ thuộc PostgreSQL.
 export class RecommendationQueryService {
+    private readonly logger = new Logger(RecommendationQueryService.name);
     private readonly cacheTtlSeconds: number;
+    private readonly trainingSnapshotCaptureEnabled: boolean;
 
+    // Đọc chính sách capture và cache một lần lúc khởi tạo để request path không đổi cấu hình giữa chừng.
     constructor(
         private readonly config: ConfigService,
         private readonly profile: ProfileQueryService,
@@ -40,7 +54,20 @@ export class RecommendationQueryService {
         private readonly trackingToken: RecommendationTrackingTokenService,
         private readonly mlRanking: RecommendationMlRankingService,
         private readonly catalog: CatalogService,
+        @Optional()
+        @Inject(RECOMMENDATION_TRAINING_SNAPSHOT_WRITER)
+        private readonly trainingSnapshotWriter?: RecommendationTrainingSnapshotWriter,
     ) {
+        const configuredSnapshotCapture = this.config.get<string>(
+            'RECOMMENDATION_TRAINING_SNAPSHOT_ENABLED',
+        );
+        // Kubernetes production hiện chỉ truyền NODE_ENV; mặc định bật pilot ở prod và tắt ở local/dev.
+        // Giá trị tường minh luôn ưu tiên để operator có kill switch khi cần dừng capture.
+        this.trainingSnapshotCaptureEnabled =
+            configuredSnapshotCapture === undefined
+                ? this.config.get<string>('NODE_ENV', 'development') ===
+                  'production'
+                : configuredSnapshotCapture === 'true';
         const configuredTtl = Number(
             this.config.get<string>('RECOMMENDATION_CACHE_TTL_SECONDS', '300'),
         );
@@ -49,7 +76,7 @@ export class RecommendationQueryService {
             : 300;
     }
 
-    // Trả recommendation theo actor context, ưu tiên cache versioned rồi mới dựng candidate pool để backend kiểm soát pagination.
+    // Trả recommendation và ghi snapshot trước khi cache; cache hit clone snapshot với request ID riêng để event join chính xác.
     async getRecommendations(
         input: RecommendationQueryDto,
         userId: string | null,
@@ -71,16 +98,24 @@ export class RecommendationQueryService {
             ),
         ]);
         const ruleVersion = encodeURIComponent(policyVersion);
-        const cacheKey = `recommendation:contract-v8:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}`;
+        // Tách cache có snapshot khỏi cache không có snapshot nguồn.
+        // Khi bật lại capture, request mới sẽ không dùng slate cũ thiếu attribution.
+        const snapshotCacheNamespace =
+            this.trainingSnapshotCaptureEnabled && this.trainingSnapshotWriter
+                ? 'snapshot-v1'
+                : 'snapshot-disabled';
+        const cacheKey = `recommendation:contract-v8:v${globalVersion}:r${ruleVersion}:m${mode}:a${actorVersion}:${actorType}:${actorId}:${sessionId ?? 'none'}:${input.surface}:${input.productId ?? 'none'}:${input.page}:${pageSize}:${snapshotCacheNamespace}`;
         const cached =
             await this.redis.getJson<RecommendationResponse>(cacheKey);
         if (cached) {
-            const response = this.refreshCachedResponse(
+            // Cache format có suffix snapshot-v1 để slate cũ không bị dùng mà thiếu snapshot nguồn.
+            const refreshed = this.refreshCachedResponse(
                 cached,
                 actorId,
                 input.surface,
             );
-            return response;
+            await this.copyTrainingSnapshot(refreshed.snapshotCopy);
+            return refreshed.response;
         }
 
         const context = sessionId ? await this.session.get(sessionId) : null;
@@ -92,26 +127,34 @@ export class RecommendationQueryService {
             pageSize,
             mode,
         );
-        await this.redis.setJson(
-            cacheKey,
-            result.response,
-            this.cacheTtlSeconds,
-        );
+        const snapshotSaved = await this.saveTrainingSnapshot(result.snapshot);
+        // Không tạo cache mới nếu snapshot chưa được lưu; request kế tiếp thử lại thay vì tái dùng slate không có dữ liệu train.
+        if (snapshotSaved) {
+            await this.redis.setJson(
+                cacheKey,
+                result.response,
+                this.cacheTtlSeconds,
+            );
+        }
         return result.response;
     }
 
-    // Tạo request/token mới cho mỗi HTTP response để cache hit không làm gộp impression của nhiều lần serving vào một requestId.
+    // Cache giữ API response nhỏ; mỗi hit nhận request ID mới và copy snapshot gốc trong PostgreSQL với servedAt riêng.
     private refreshCachedResponse(
         cached: RecommendationResponse,
         actorId: string,
         surface: RecommendationQueryDto['surface'],
-    ): RecommendationResponse {
+    ): {
+        response: RecommendationResponse;
+        snapshotCopy: RecommendationTrainingSnapshotCopy;
+    } {
         const requestId = randomUUID();
         const rankingMode: RankingMode = 'AI_MODEL';
-        return {
+        const servedAt = new Date().toISOString();
+        const response = {
             ...cached,
             requestId,
-            generatedAt: new Date().toISOString(),
+            generatedAt: servedAt,
             // contract-v8 tách cache theo semantics profile và feature schema mới để response v7 không sống lại.
             rankingMode,
             rankingModelVersion: cached.rankingModelVersion ?? null,
@@ -131,12 +174,20 @@ export class RecommendationQueryService {
                 }),
             })),
         };
+        return {
+            response,
+            snapshotCopy: {
+                sourceRequestId: cached.requestId,
+                requestId,
+                servedAt,
+            },
+        };
     }
 
     // Gom source candidate bằng các query song song; duplicate product chỉ giữ một read model và hợp nhất source để explainability.
     // Với product detail, snapshot được đọc trước để xác định đúng namespace shop rồi truyền exclusion xuống từng source và union.
     // Với home/recommendations_page, recentProductIds không bị loại vì chúng vẫn là anchor cho semantic/co-behavior ranking.
-    // Mọi source vẫn fail-soft ở CandidateGenerationService, còn snapshot lỗi chỉ làm mất shop exclusion chứ không làm mất response.
+    // Lỗi ghi snapshot không làm hỏng serving; source lỗi vẫn được giữ theo fail-soft của CandidateGenerationService.
     private async buildResponse(
         input: RecommendationQueryDto,
         userId: string | null,
@@ -146,6 +197,7 @@ export class RecommendationQueryService {
         mode: RankingMode,
     ): Promise<{
         response: RecommendationResponse;
+        snapshot: RecommendationTrainingSnapshot;
     }> {
         const actorType = userId ? 'USER' : 'SESSION';
         const actorId = userId ?? sessionId ?? 'anonymous';
@@ -212,7 +264,7 @@ export class RecommendationQueryService {
 
         const union = this.unionFactory.create(
             [...excluded],
-            300,
+            CANDIDATE_POOL_BUDGET,
             shopExclusions,
         );
         const sourceResults = await this.candidates.generate({
@@ -230,8 +282,9 @@ export class RecommendationQueryService {
 
         // Giới hạn candidate union trước ranking để request miss không làm phình CPU/DB khi nhiều source cùng trả dữ liệu.
         const candidatePool = union.values();
+        const requestId = randomUUID();
         const mlResult = await this.mlRanking.predict({
-            requestId: randomUUID(),
+            requestId,
             candidates: candidatePool,
             products: productPreferences,
             categories: categoryPreferences,
@@ -247,7 +300,8 @@ export class RecommendationQueryService {
         const total = diversified.length;
         const start = (input.page - 1) * pageSize;
         const pageItems = diversified.slice(start, start + pageSize);
-        const requestId = randomUUID();
+        const servedAt = new Date().toISOString();
+        const rankingPolicyVersion = this.ranking.getPolicyVersion();
         const response: RecommendationResponse = {
             requestId,
             strategy,
@@ -272,13 +326,106 @@ export class RecommendationQueryService {
             pageSize,
             total,
             totalPages: total === 0 ? 1 : Math.ceil(total / pageSize),
-            generatedAt: new Date().toISOString(),
-            ruleVersion: this.ranking.getPolicyVersion(),
-            rankingPolicyVersion: this.ranking.getPolicyVersion(),
+            generatedAt: servedAt,
+            ruleVersion: rankingPolicyVersion,
+            rankingPolicyVersion,
             rankingMode: mode,
             rankingModelVersion: mlResult.modelVersion,
         };
-        return { response };
+        const selectedByProductId = new Map(
+            diversified.map((item, index) => [
+                item.product.productId,
+                { item, rank: index + 1 },
+            ]),
+        );
+        const snapshot: RecommendationTrainingSnapshot = {
+            requestId,
+            servedAt,
+            featuresComputedAt: mlResult.featuresComputedAt,
+            environment: this.config.get<string>('NODE_ENV', 'unknown'),
+            surface: input.surface,
+            page: input.page,
+            strategy,
+            rankingMode: mode,
+            rankingModelVersion: mlResult.modelVersion,
+            rankingPolicyVersion,
+            featureSchemaVersion: RECOMMENDATION_FEATURE_SCHEMA_VERSION,
+            candidateBudget: CANDIDATE_POOL_BUDGET,
+            candidateCount: candidatePool.length,
+            selectedCandidateCount: diversified.length,
+            sourceCandidates: sourceResults.map((result) => ({
+                source: result.source,
+                candidateCount: result.products.length,
+                candidateProductIds: result.products
+                    .slice(0, SOURCE_SNAPSHOT_ID_LIMIT)
+                    .map((product) => product.productId),
+                truncated: result.products.length > SOURCE_SNAPSHOT_ID_LIMIT,
+            })),
+            candidates: candidatePool.map((candidate) => {
+                const productId = candidate.product.productId;
+                const selected = selectedByProductId.get(productId);
+                return {
+                    productId,
+                    rank: selected?.rank ?? null,
+                    score: mlResult.scores.get(productId) ?? null,
+                    features: mlResult.features.get(productId) ?? null,
+                    sources: [...candidate.sources].sort(),
+                    categoryId: candidate.product.categoryId,
+                    brandId: candidate.product.brandId,
+                    sellerShopId: candidate.product.sellerShopId,
+                    diversityRelaxed: selected?.item.diversityRelaxed ?? false,
+                };
+            }),
+        };
+        return { response, snapshot };
+    }
+
+    // Lưu đầy đủ feature/input snapshot trước khi đưa response vào cache để cache hit sau này luôn có row nguồn để clone.
+    private async saveTrainingSnapshot(
+        snapshot: RecommendationTrainingSnapshot,
+    ): Promise<boolean> {
+        if (
+            !this.trainingSnapshotCaptureEnabled ||
+            !this.trainingSnapshotWriter
+        ) {
+            return true;
+        }
+        try {
+            await this.trainingSnapshotWriter.save(snapshot);
+            return true;
+        } catch (error) {
+            const errorType = error instanceof Error ? error.name : 'unknown';
+            this.logger.warn(
+                `Recommendation training snapshot save failed requestId=${snapshot.requestId} errorType=${errorType}`,
+            );
+            return false;
+        }
+    }
+
+    // Cache slate chỉ được tái dùng nếu snapshot nguồn đã có; mọi lỗi telemetry được ghi nhận nhưng không chặn người mua.
+    private async copyTrainingSnapshot(
+        copy: RecommendationTrainingSnapshotCopy,
+    ): Promise<void> {
+        if (
+            !this.trainingSnapshotCaptureEnabled ||
+            !this.trainingSnapshotWriter
+        ) {
+            return;
+        }
+        try {
+            const copied =
+                await this.trainingSnapshotWriter.copyForServedRequest(copy);
+            if (!copied) {
+                this.logger.warn(
+                    `Recommendation training snapshot source missing requestId=${copy.requestId}`,
+                );
+            }
+        } catch (error) {
+            const errorType = error instanceof Error ? error.name : 'unknown';
+            this.logger.warn(
+                `Recommendation training snapshot copy failed requestId=${copy.requestId} errorType=${errorType}`,
+            );
+        }
     }
 
     // Dua ket qua source vao union tai mot diem duy nhat de query service chi con dieu phoi response/pagination.

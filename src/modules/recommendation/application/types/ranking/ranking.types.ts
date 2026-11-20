@@ -5,6 +5,8 @@ import type { RecommendationCatalogProduct } from '@/modules/catalog/application
 
 export type RankingMode = 'AI_MODEL';
 
+export const RECOMMENDATION_FEATURE_SCHEMA_VERSION = 'ranking-features-v3';
+
 export type RecommendationCandidate = {
     product: RecommendationCatalogProduct;
     sources: Set<string>;

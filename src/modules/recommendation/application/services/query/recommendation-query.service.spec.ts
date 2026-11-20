@@ -98,6 +98,7 @@ describe('RecommendationQueryService', () => {
             scores: new Map([['product-1', 0.75]]),
             features: new Map(),
             modelVersion: 'ranking-lambdarank-test-v1',
+            featuresComputedAt: '2026-01-01T00:00:00.000Z',
         });
         mockTrackingToken.create.mockReturnValue('signed-item-token');
 
@@ -152,6 +153,7 @@ describe('RecommendationQueryService', () => {
             scores,
             features,
             modelVersion: 'ranking-lambdarank-test-v1',
+            featuresComputedAt: '2026-01-01T00:00:00.000Z',
         });
 
         // Act

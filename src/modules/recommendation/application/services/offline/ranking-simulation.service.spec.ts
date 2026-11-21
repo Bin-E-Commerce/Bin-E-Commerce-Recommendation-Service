@@ -47,7 +47,7 @@ describe('RankingSimulationService', () => {
     ): RankingSyntheticOptions => ({
         users: 10,
         sessions: 20,
-        targetEvents: 160,
+        targetRows: 160,
         seed: 42,
         referenceTime: new Date('2026-01-01T00:00:00.000Z'),
         ...overrides,
@@ -72,20 +72,17 @@ describe('RankingSimulationService', () => {
         expect(second).toEqual(first);
     });
 
-    // Kiểm tra feature, request timestamp và label balance tối thiểu trong từng request.
-    it('should create bounded nine-feature rows with positive and negative items per request', () => {
+    // Kiểm tra feature, request timestamp, nhãn toàn tập và việc loại anchor khỏi slate.
+    it('should create bounded nine-feature rows without repeating the current product', () => {
         // Arrange
         const dataset = target.generate(createCatalog(), createOptions());
-        const rowsByRequest = new Map<string, typeof dataset.rows>();
+        const currentProductByRequest = new Map(
+            dataset.sessions.map((session) => [
+                session.requestId,
+                session.currentProductId,
+            ]),
+        );
 
-        // Act
-        for (const row of dataset.rows) {
-            const rows = rowsByRequest.get(row.requestId) ?? [];
-            rows.push(row);
-            rowsByRequest.set(row.requestId, rows);
-        }
-
-        // Assert
         expect(dataset.sessions).toHaveLength(20);
         expect(dataset.events.length).toBeGreaterThan(160);
         expect(dataset.rows.every((row) => row.features)).toBe(true);
@@ -106,11 +103,12 @@ describe('RankingSimulationService', () => {
                     row.features.every((value) => value >= 0 && value <= 1),
             ),
         ).toBe(true);
+        expect(dataset.rows.some((row) => row.label === 1)).toBe(true);
+        expect(dataset.rows.some((row) => row.label === 0)).toBe(true);
         expect(
-            [...rowsByRequest.values()].every(
-                (rows) =>
-                    rows.some((row) => row.label === 1) &&
-                    rows.some((row) => row.label === 0),
+            dataset.rows.every(
+                (row) =>
+                    row.itemId !== currentProductByRequest.get(row.requestId),
             ),
         ).toBe(true);
         expect(new Set(dataset.rows.map((row) => row.requestId)).size).toBe(20);

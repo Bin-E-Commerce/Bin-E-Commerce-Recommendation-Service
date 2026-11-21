@@ -10,9 +10,11 @@ import { RankingSimulationService } from '@/modules/recommendation/application/s
 import { RecommendationRuleService } from '@/modules/profiles/application/services/rules/recommendation-rule.service';
 import type { RecommendationCatalogProduct } from '@/modules/catalog/application/types/catalog-product.type';
 import type { RankingSyntheticDataset } from '@/modules/recommendation/application/types/offline/ranking-synthetic.types';
+import { SYNTHETIC_SESSION_INTERVAL_MS } from '@/modules/recommendation/application/types/offline/ranking-synthetic.types';
 
 interface CatalogRow extends QueryResultRow {
     product_id: string;
+    catalog_snapshot_at: Date | string;
     name: string;
     slug: string;
     image_url: string | null;
@@ -43,12 +45,19 @@ interface CatalogRow extends QueryResultRow {
 interface CliOptions {
     users: number;
     sessions: number;
-    targetEvents: number;
+    targetRows: number;
     seed: number;
     catalogLimit: number;
     syntheticCatalogSize: number | null;
     output: string;
     referenceTime: Date;
+    referenceTimeProvided: boolean;
+    catalogSnapshotAt: Date | null;
+}
+
+interface CatalogSnapshot {
+    products: RecommendationCatalogProduct[];
+    snapshotAt: Date;
 }
 
 // Nạp biến môi trường local mà không in secret; biến đã tồn tại bên ngoài luôn được ưu tiên.
@@ -78,7 +87,7 @@ async function loadEnvironmentFiles(): Promise<void> {
     }
 }
 
-// Parse CLI với default pilot, giới hạn số lượng để lệnh offline không vô tình quét dataset quá lớn.
+// Parse CLI với giới hạn row budget; --events chỉ là alias cũ và không còn mang nghĩa số event đầu ra.
 function parseArguments(argv: string[]): CliOptions {
     const values = new Map<string, string>();
     for (let index = 0; index < argv.length; index += 1) {
@@ -101,10 +110,17 @@ function parseArguments(argv: string[]): CliOptions {
     );
     if (Number.isNaN(referenceTime.getTime()))
         throw new Error('INVALID_REFERENCE_TIME');
+    // Từ chối hai tên cùng lúc để một lệnh không có target mơ hồ khi người dùng chuyển sang --rows.
+    if (values.has('rows') && values.has('events'))
+        throw new Error('ROWS_AND_EVENTS_ARGUMENTS_ARE_MUTUALLY_EXCLUSIVE');
     return {
         users: parsePositive(values.get('users'), 1_000, 100_000),
         sessions: parsePositive(values.get('sessions'), 5_000, 1_000_000),
-        targetEvents: parsePositive(values.get('events'), 100_000, 5_000_000),
+        targetRows: parsePositive(
+            values.get('rows') ?? values.get('events'),
+            100_000,
+            5_000_000,
+        ),
         seed: parseInteger(values.get('seed'), 42),
         catalogLimit: parsePositive(
             values.get('catalog-limit'),
@@ -117,17 +133,20 @@ function parseArguments(argv: string[]): CliOptions {
         output: resolve(
             process.cwd(),
             values.get('output') ??
-                '../../services/ai-service/data/ranking-synthetic/seed-42',
+                '../../services/ai-service/data/ranking-synthetic/v3-seed-42',
         ),
         referenceTime,
+        referenceTimeProvided: values.has('reference-time'),
+        catalogSnapshotAt: null,
     };
 }
 
 // Tạo catalog giả có danh mục và thương hiệu phân tán để simulator chạy độc lập với dữ liệu PostgreSQL thật.
+// Sản phẩm được tạo trước request đầu tiên để các phiên lịch sử không nhìn thấy catalog tương lai.
 // ID có tiền tố synthetic giúp đầu ra không thể bị nhầm với catalog production; mọi thuộc tính đều xác định theo index.
 function createSyntheticCatalog(
     size: number,
-    referenceTime: Date,
+    firstRequestAt: Date,
 ): RecommendationCatalogProduct[] {
     const categoryCount = 32;
     const brandCount = 24;
@@ -142,7 +161,7 @@ function createSyntheticCatalog(
         const categoryId = `synthetic-category-${String(categoryNumber + 1).padStart(2, '0')}`;
         const brandId = `synthetic-brand-${String(brandNumber + 1).padStart(2, '0')}`;
         const createdAt = new Date(
-            referenceTime.getTime() - ((index * 7919) % 730) * dayMilliseconds,
+            firstRequestAt.getTime() - ((index * 7919) % 730) * dayMilliseconds,
         );
         const minPrice = 100 + ((index * 137) % 10_000);
 
@@ -180,10 +199,10 @@ function createSyntheticCatalog(
     });
 }
 
-// Đọc catalog bằng query read-only, chỉ lấy product active còn hàng làm candidate source cho simulator.
-async function loadCatalog(
-    limit: number,
-): Promise<RecommendationCatalogProduct[]> {
+// Đọc catalog bằng một câu SELECT để product và CURRENT_TIMESTAMP cùng thuộc database snapshot.
+// Timestamp được gắn vào manifest và trở thành mốc sớm nhất cho các request tổng hợp.
+// Vì sales/rating không có lịch sử trong read model, hàm từ chối cách dùng snapshot hiện tại để backfill quá khứ.
+async function loadCatalog(limit: number): Promise<CatalogSnapshot> {
     const pool = new Pool({
         host: process.env.POSTGRES_HOST ?? 'localhost',
         port: Number(process.env.POSTGRES_PORT ?? '5432'),
@@ -197,7 +216,8 @@ async function loadCatalog(
     });
     try {
         const result = await pool.query<CatalogRow>(
-            `SELECT product_id, name, slug, image_url,
+            `SELECT CURRENT_TIMESTAMP AS catalog_snapshot_at,
+                    product_id, name, slug, image_url,
                     category_id, brand_id, seller_shop_id,
                     min_price, max_price, rating_avg, review_count, total_sold,
                     status, is_in_stock, created_at, updated_at,
@@ -210,7 +230,15 @@ async function loadCatalog(
              LIMIT $1`,
             [limit],
         );
-        return result.rows.map(toCatalogProduct);
+        const firstRow = result.rows[0];
+        if (!firstRow) throw new Error('RECOMMENDATION_CATALOG_EMPTY');
+        const snapshotAt = new Date(firstRow.catalog_snapshot_at);
+        if (Number.isNaN(snapshotAt.getTime()))
+            throw new Error('INVALID_CATALOG_SNAPSHOT_TIME');
+        return {
+            products: result.rows.map(toCatalogProduct),
+            snapshotAt,
+        };
     } finally {
         await pool.end();
     }
@@ -262,6 +290,7 @@ async function writeJsonLines(
 }
 
 // Ghi dataset, split và manifest để trainer/evaluator có thể chạy độc lập với Recommendation Service.
+// Manifest ghi riêng catalog snapshot, target candidate rows và event count thực tế để lần chạy có thể tái lập.
 async function writeDataset(
     output: string,
     dataset: RankingSyntheticDataset,
@@ -285,17 +314,26 @@ async function writeDataset(
                   ).toFixed(6),
               );
     const manifest = {
-        datasetVersion: 'ranking-synthetic-v1',
+        datasetVersion: 'ranking-synthetic-v3',
         featureSchemaVersion: 'ranking-features-v3',
+        dataNature: 'synthetic',
+        labelGeneration: 'position-independent-unforced-interaction-funnel-v2',
         catalogSource:
             options.syntheticCatalogSize === null
                 ? 'recommendation_catalog_products'
                 : 'synthetic_catalog',
         seed: options.seed,
         referenceTime: options.referenceTime.toISOString(),
+        catalogSnapshotAt: options.catalogSnapshotAt?.toISOString() ?? null,
+        firstRequestAt:
+            dataset.sessions[0]?.createdAt ??
+            options.referenceTime.toISOString(),
+        lastRequestAt:
+            dataset.sessions.at(-1)?.createdAt ??
+            options.referenceTime.toISOString(),
         requestedUsers: options.users,
         requestedSessions: options.sessions,
-        requestedEvents: options.targetEvents,
+        requestedCandidateRows: options.targetRows,
         catalogProducts: dataset.catalog.length,
         users: dataset.personas.length,
         sessions: dataset.sessions.length,
@@ -330,9 +368,11 @@ async function writeDataset(
             resolve(output, 'metrics.json'),
             JSON.stringify(
                 {
-                    datasetVersion: 'ranking-synthetic-v1',
+                    datasetVersion: 'ranking-synthetic-v3',
+                    requestedCandidateRows: options.targetRows,
                     positiveRate: manifest.splits,
-                    note: 'Data quality summary; model metrics are produced by AI Service evaluator.',
+                    dataNature: 'synthetic',
+                    note: 'Synthetic pipeline-development data; not evidence of real-user recommendation quality. Model metrics are produced by AI Service evaluator.',
                 },
                 null,
                 2,
@@ -342,32 +382,63 @@ async function writeDataset(
     ]);
 }
 
-// CLI entrypoint: chọn catalog theo option, tính feature bằng production builder và chỉ ghi dataset vào output directory.
+// CLI entrypoint chọn nguồn catalog, khóa mốc thời gian hợp lệ rồi gọi production feature builder.
+// Với catalog DB, request đầu tiên phải nằm tại hoặc sau snapshot vì các aggregate chỉ có giá trị hiện tại.
+// Không có reference-time rõ ràng thì mô phỏng chạy về phía trước từ snapshot; không dựng feature quá khứ giả.
+// Output chỉ gồm artifact offline; catalog và event nghiệp vụ trong database không bị sửa.
 async function main(): Promise<void> {
     await loadEnvironmentFiles();
     const options = parseArguments(process.argv.slice(2));
-    // Chế độ synthetic không mở kết nối PostgreSQL; chế độ mặc định chỉ đọc catalog recommendation đã được đồng bộ.
-    const catalog =
-        options.syntheticCatalogSize === null
-            ? await loadCatalog(options.catalogLimit)
-            : createSyntheticCatalog(
-                  options.syntheticCatalogSize,
-                  options.referenceTime,
+    let runOptions = options;
+    let catalog: RecommendationCatalogProduct[];
+    if (options.syntheticCatalogSize === null) {
+        const snapshot = await loadCatalog(options.catalogLimit);
+        // Mặc định mô phỏng bắt đầu tại thời điểm snapshot; reference-time do người dùng nhập phải ở sau snapshot.
+        const referenceTime = options.referenceTimeProvided
+            ? options.referenceTime
+            : new Date(
+                  snapshot.snapshotAt.getTime() +
+                      options.sessions * SYNTHETIC_SESSION_INTERVAL_MS,
               );
+        const firstRequestAt = new Date(
+            referenceTime.getTime() -
+                options.sessions * SYNTHETIC_SESSION_INTERVAL_MS,
+        );
+        if (firstRequestAt.getTime() < snapshot.snapshotAt.getTime())
+            throw new Error('CATALOG_SNAPSHOT_CANNOT_BACKFILL_REQUEST_HISTORY');
+        runOptions = {
+            ...options,
+            referenceTime,
+            catalogSnapshotAt: snapshot.snapshotAt,
+        };
+        catalog = snapshot.products;
+    } else {
+        const firstRequestAt = new Date(
+            options.referenceTime.getTime() -
+                options.sessions * SYNTHETIC_SESSION_INTERVAL_MS,
+        );
+        catalog = createSyntheticCatalog(
+            options.syntheticCatalogSize,
+            firstRequestAt,
+        );
+    }
     const config = new ConfigService(process.env);
     const rules = new RecommendationRuleService(config);
     const features = new RankingFeatureService(rules);
     const simulation = new RankingSimulationService(features);
-    const dataset = simulation.generate(catalog, options);
-    await writeDataset(options.output, dataset, options);
+    const dataset = simulation.generate(catalog, runOptions);
+    await writeDataset(runOptions.output, dataset, runOptions);
     console.log(
         JSON.stringify({
-            output: options.output,
+            output: runOptions.output,
             catalogProducts: dataset.catalog.length,
             users: dataset.personas.length,
             sessions: dataset.sessions.length,
             events: dataset.events.length,
             rankingRows: dataset.rows.length,
+            requestedCandidateRows: runOptions.targetRows,
+            catalogSnapshotAt:
+                runOptions.catalogSnapshotAt?.toISOString() ?? null,
         }),
     );
 }
@@ -379,12 +450,13 @@ function printHelp(): void {
 Options:
   --users <number>          Synthetic users (default: 1000)
   --sessions <number>       Synthetic sessions (default: 5000)
-  --events <number>         Target event budget (default: 100000)
+  --rows <number>           Target ranking candidate-row budget (default: 100000)
+  --events <number>         Legacy alias for --rows; event count depends on funnel outcomes
   --seed <integer>          Deterministic seed (default: 42)
   --catalog-limit <number>  Catalog rows to read (default: 20000)
   --synthetic-catalog-size <number>  Generate a local synthetic catalog and skip PostgreSQL
-  --reference-time <iso>    Fixed feature clock (default: 2026-01-01T00:00:00Z)
-  --output <path>            Output dataset directory
+  --reference-time <iso>    Last request clock; DB mode requires its timeline after catalog snapshot
+  --output <path>           Output dataset directory (default: ranking-synthetic/v3-seed-42)
 `);
 }
 

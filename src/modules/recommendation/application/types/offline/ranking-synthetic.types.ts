@@ -24,10 +24,13 @@ export type SyntheticInteractionType =
 
 export type SyntheticDatasetSplit = 'train' | 'validation' | 'test';
 
+// Khoảng cách cố định giữa request giả lập để manifest và temporal split tái lập được.
+export const SYNTHETIC_SESSION_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
 export interface RankingSyntheticOptions {
     users: number;
     sessions: number;
-    targetEvents: number;
+    targetRows: number;
     seed: number;
     referenceTime: Date;
 }
@@ -67,7 +70,7 @@ export interface RankingSyntheticEvent {
 }
 
 export interface RankingSyntheticRow {
-    datasetVersion: 'ranking-synthetic-v1';
+    datasetVersion: 'ranking-synthetic-v3';
     featureSchemaVersion: 'ranking-features-v3';
     userId: string;
     sessionId: string;

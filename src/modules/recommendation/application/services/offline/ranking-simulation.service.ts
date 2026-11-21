@@ -12,9 +12,9 @@
 // npm run ranking-simulate --workspace @bin-ecommerce/recommendation-service -- `
 //   --users 1000 `
 //   --sessions 5000 `
-//   --events 100000 `
+//   --rows 100000 `
 //   --seed 42 `
-//   --output ../../services/ai-service/data/ranking-synthetic/pilot-1000u-5000s-seed42
+//   --output ../../services/ai-service/data/ranking-synthetic/v3-seed-42
 import { Injectable } from '@nestjs/common';
 import type {
     PreferenceValue,
@@ -36,7 +36,10 @@ import type {
     SyntheticDatasetSplit,
     SyntheticInteractionType,
 } from '@/modules/recommendation/application/types/offline/ranking-synthetic.types';
-import { SYNTHETIC_FEATURE_ORDER } from '@/modules/recommendation/application/types/offline/ranking-synthetic.types';
+import {
+    SYNTHETIC_FEATURE_ORDER,
+    SYNTHETIC_SESSION_INTERVAL_MS,
+} from '@/modules/recommendation/application/types/offline/ranking-synthetic.types';
 
 const DAY_MS = 86_400_000;
 
@@ -52,7 +55,10 @@ interface SyntheticAction {
 export class RankingSimulationService {
     constructor(private readonly features: RankingFeatureService) {}
 
-    // Tạo dataset tái lập từ catalog snapshot bằng seed cố định; side effect được giữ ngoài service để CLI chỉ ghi file offline.
+    // Tạo slate và event giả theo seed cố định để tái lập được cùng dataset.
+    // Mỗi request chỉ dùng catalog item đã tồn tại tại thời điểm request.
+    // Feature profile và freshness cũng được tính theo chính thời điểm đó để tránh nhìn thấy dữ liệu tương lai.
+    // Service chỉ trả dữ liệu trong memory; CLI sở hữu việc ghi file offline, không publish event nghiệp vụ.
     generate(
         catalog: RecommendationCatalogProduct[],
         options: RankingSyntheticOptions,
@@ -62,8 +68,19 @@ export class RankingSimulationService {
         const orderedCatalog = [...catalog].sort((left, right) =>
             left.productId.localeCompare(right.productId),
         );
+        const firstRequestAt = new Date(
+            options.referenceTime.getTime() -
+                options.sessions * SYNTHETIC_SESSION_INTERVAL_MS,
+        );
+        const initialCatalog = orderedCatalog.filter(
+            (product) =>
+                product.createdAt.getTime() <= firstRequestAt.getTime(),
+        );
+        if (initialCatalog.length < 8)
+            throw new Error('SYNTHETIC_CATALOG_HAS_TOO_FEW_PRODUCTS_AT_START');
+        // Persona chỉ lấy category/brand đã có ở mốc đầu để hồ sơ giả không học từ catalog tương lai.
         const personas = this.createPersonas(
-            orderedCatalog,
+            initialCatalog,
             options.users,
             random,
         );
@@ -74,18 +91,30 @@ export class RankingSimulationService {
             8,
             Math.min(
                 24,
-                Math.ceil(options.targetEvents / Math.max(options.sessions, 1)),
+                Math.ceil(options.targetRows / Math.max(options.sessions, 1)),
             ),
         );
 
         for (let index = 0; index < options.sessions; index += 1) {
             const persona = personas[index % personas.length];
             if (!persona) throw new Error('SYNTHETIC_PERSONA_MISSING');
+            // Timestamp được tính trước để catalog, user context và feature cùng dùng một mốc as-of.
+            const requestAt = new Date(
+                options.referenceTime.getTime() -
+                    (options.sessions - index) * SYNTHETIC_SESSION_INTERVAL_MS,
+            );
+            const availableCatalog = orderedCatalog.filter(
+                (product) => product.createdAt.getTime() <= requestAt.getTime(),
+            );
+            if (availableCatalog.length < 8)
+                throw new Error(
+                    'SYNTHETIC_CATALOG_HAS_TOO_FEW_PRODUCTS_AS_OF_REQUEST',
+                );
             const session = this.createSession(
                 persona,
                 index,
-                options,
-                orderedCatalog,
+                requestAt,
+                availableCatalog,
                 random,
             );
             const sessionWithSplit = {
@@ -96,9 +125,8 @@ export class RankingSimulationService {
             const result = this.simulateSession(
                 persona,
                 sessionWithSplit,
-                orderedCatalog,
+                availableCatalog,
                 candidatesPerSession,
-                options,
                 random,
             );
             events.push(...result.events);
@@ -108,7 +136,7 @@ export class RankingSimulationService {
         return { catalog: orderedCatalog, personas, sessions, events, rows };
     }
 
-    // Chặn input không hợp lệ trước khi sinh dữ liệu để tránh tạo dataset thiếu class hoặc thiếu candidate.
+    // Chặn input không hợp lệ trước khi sinh dữ liệu để mỗi request có slate đủ lớn cho pairwise ranking.
     private validateInput(
         catalog: RecommendationCatalogProduct[],
         options: RankingSyntheticOptions,
@@ -119,8 +147,8 @@ export class RankingSimulationService {
             throw new Error('SYNTHETIC_USERS_MUST_BE_POSITIVE');
         if (!Number.isInteger(options.sessions) || options.sessions < 1)
             throw new Error('SYNTHETIC_SESSIONS_MUST_BE_POSITIVE');
-        if (!Number.isInteger(options.targetEvents) || options.targetEvents < 1)
-            throw new Error('SYNTHETIC_EVENTS_MUST_BE_POSITIVE');
+        if (!Number.isInteger(options.targetRows) || options.targetRows < 1)
+            throw new Error('SYNTHETIC_TARGET_ROWS_MUST_BE_POSITIVE');
         if (!Number.isInteger(options.seed))
             throw new Error('SYNTHETIC_SEED_MUST_BE_INTEGER');
         if (Number.isNaN(options.referenceTime.getTime()))
@@ -167,11 +195,12 @@ export class RankingSimulationService {
         }));
     }
 
-    // Tạo session theo timeline cố định để split theo thời gian và freshness không phụ thuộc thời điểm chạy CLI.
+    // Tạo session tại timestamp đã được chọn trước để split, catalog availability và feature clock không lệch nhau.
+    // Anchor product chỉ được chọn từ catalog đã có ở request này; nếu không còn item hợp sở thích thì dùng catalog khả dụng.
     private createSession(
         persona: RankingSyntheticPersona,
         index: number,
-        options: RankingSyntheticOptions,
+        requestAt: Date,
         catalog: RecommendationCatalogProduct[],
         random: RandomSource,
     ): RankingSyntheticSession {
@@ -179,10 +208,6 @@ export class RankingSimulationService {
             this.matchesPersona(product, persona),
         );
         const anchor = this.pick(matching.length ? matching : catalog, random);
-        const createdAt = new Date(
-            options.referenceTime.getTime() -
-                (options.sessions - index) * 2 * 60 * 60 * 1000,
-        );
         const sequence = String(index + 1).padStart(5, '0');
         return {
             userId: persona.userId,
@@ -196,27 +221,31 @@ export class RankingSimulationService {
             recentProductIds: [anchor.productId],
             recentCategoryIds: anchor.categoryId ? [anchor.categoryId] : [],
             recentBrandIds: anchor.brandId ? [anchor.brandId] : [],
-            createdAt: createdAt.toISOString(),
+            createdAt: requestAt.toISOString(),
             split: 'train',
         };
     }
 
-    // Sinh impression và funnel action theo utility ẩn; label chỉ nhìn hành động sau impression.
+    // Sinh slate, feature và outcome từ cùng một request snapshot theo timeline giả lập.
+    // Slate loại anchor đang xem; chỉ candidate có trong catalog tại request mới được chấm feature.
+    // Nhãn sinh từ utility ẩn không phụ thuộc vị trí hiển thị và không bị ép cân bằng theo từng query.
+    // Dữ liệu chỉ phục vụ phát triển pipeline, không đại diện hành vi khách thật.
     private simulateSession(
         persona: RankingSyntheticPersona,
         session: RankingSyntheticSession,
         catalog: RecommendationCatalogProduct[],
         candidateCount: number,
-        options: RankingSyntheticOptions,
         random: RandomSource,
     ): { events: RankingSyntheticEvent[]; rows: RankingSyntheticRow[] } {
         const candidates = this.sampleCandidates(
             catalog,
             persona,
             candidateCount,
+            session.currentProductId,
             random,
         );
-        const preferences = this.buildPreferences(persona, session, options);
+        const sessionTime = new Date(session.createdAt);
+        const preferences = this.buildPreferences(persona, session);
         const context: SessionContext = {
             sessionId: session.sessionId,
             recentProductIds: session.recentProductIds,
@@ -230,26 +259,19 @@ export class RankingSimulationService {
             intentUpdatedAt: session.createdAt,
             version: 1,
         };
-        const actions = candidates.map((product, index) =>
+        const actions = candidates.map((product) =>
             this.simulateAction(
-                this.hiddenUtility(product, persona, index + 1, random),
+                this.hiddenUtility(product, persona, random),
                 persona.riskTolerance,
                 random,
             ),
         );
-        this.ensurePositiveAndNegative(actions);
         const rows: RankingSyntheticRow[] = [];
         const events: RankingSyntheticEvent[] = [];
-        const sessionTime = new Date(session.createdAt);
 
         candidates.forEach((product, index) => {
             const position = index + 1;
-            const candidate = this.toCandidate(
-                product,
-                session,
-                index,
-                candidates.length,
-            );
+            const candidate = this.toCandidate(product, persona, session);
             const vector = this.features.build(
                 candidate,
                 preferences.product,
@@ -257,12 +279,12 @@ export class RankingSimulationService {
                 preferences.brand,
                 context,
                 undefined,
-                options.referenceTime,
+                sessionTime,
             );
             const action = actions[index];
             if (!action) throw new Error('SYNTHETIC_ACTION_MISSING');
             rows.push({
-                datasetVersion: 'ranking-synthetic-v1',
+                datasetVersion: 'ranking-synthetic-v3',
                 featureSchemaVersion: 'ranking-features-v3',
                 userId: persona.userId,
                 sessionId: session.sessionId,
@@ -306,33 +328,27 @@ export class RankingSimulationService {
         return { events, rows };
     }
 
-    // Tạo contribution giả tối thiểu để semantic, co-behavior và exploration feature chạy qua production feature builder.
+    // Attribution khớp nhánh chọn candidate: match persona vào category/brand, item khác là exploration.
+    // Popularity lấy từ catalog snapshot; không gán sourceRank theo slate và không giả co-behavior khi thiếu lịch sử.
     private toCandidate(
         product: RecommendationCatalogProduct,
+        persona: RankingSyntheticPersona,
         session: RankingSyntheticSession,
-        index: number,
-        sourceSize: number,
     ): RecommendationCandidate {
-        const rank = index + 1;
-        const sources = new Set<string>(['EXPLORE']);
+        const matchesCategory = Boolean(
+            product.categoryId &&
+            persona.categoryIds.includes(product.categoryId),
+        );
+        const matchesBrand = Boolean(
+            product.brandId && persona.brandIds.includes(product.brandId),
+        );
+        const sources = new Set<string>();
+        if (matchesCategory) sources.add('CATEGORY_AFFINITY');
+        if (matchesBrand) sources.add('BRAND_AFFINITY');
+        if (!matchesCategory && !matchesBrand) sources.add('EXPLORE');
         const contributions: NonNullable<
             RecommendationCandidate['contributions']
-        > = [
-            {
-                source: 'BEST_SELLING',
-                rawScore: product.totalSold,
-                reasonCode: 'SYNTHETIC_CATALOG_SIGNAL',
-                sourceRank: rank,
-                sourceSize,
-            },
-        ];
-        if (
-            product.categoryId &&
-            session.recentCategoryIds.includes(product.categoryId)
-        )
-            sources.add('CATEGORY_AFFINITY');
-        if (product.brandId && session.recentBrandIds.includes(product.brandId))
-            sources.add('BRAND_AFFINITY');
+        > = [];
         if (session.currentProductId !== product.productId) {
             contributions.push({
                 source: 'SEMANTIC_SIMILARITY',
@@ -341,24 +357,14 @@ export class RankingSimulationService {
                 anchorProductId: session.currentProductId ?? undefined,
             });
         }
-        if (index % 3 === 0 && product.productId !== session.currentProductId) {
-            sources.add('CO_BEHAVIOR');
-            contributions.push({
-                source: 'CO_BEHAVIOR',
-                rawScore: 2 + (index % 4),
-                reasonCode: 'SYNTHETIC_CO_BEHAVIOR_SIGNAL',
-                relationType: 'CO_VIEW',
-                anchorProductId: session.currentProductId ?? undefined,
-            });
-        }
         return { product, sources, contributions };
     }
 
-    // Xấp xỉ mức phù hợp ẩn bằng persona/catalog độc lập với vector feature đầu vào model.
+    // Tạo relevance utility từ persona và catalog, không đưa thứ tự slate vào nhãn.
+    // Vị trí hiển thị không được trộn vào popularity/sourceRank nên holdout không thưởng cho thứ tự ngẫu nhiên ban đầu.
     private hiddenUtility(
         product: RecommendationCatalogProduct,
         persona: RankingSyntheticPersona,
-        position: number,
         random: RandomSource,
     ): number {
         const categoryFit =
@@ -383,7 +389,6 @@ export class RankingSimulationService {
         const popularity = this.clamp(
             Math.log1p(Math.max(product.totalSold, 0)) / 12,
         );
-        const positionBias = 1 / Math.log2(position + 1);
         const noise = (random() - 0.5) * 0.24;
         return this.clamp(
             categoryFit * 0.28 +
@@ -391,7 +396,6 @@ export class RankingSimulationService {
                 priceFit * 0.18 +
                 rating * 0.16 +
                 popularity * 0.1 +
-                positionBias * 0.1 +
                 noise,
         );
     }
@@ -442,58 +446,78 @@ export class RankingSimulationService {
         };
     }
 
-    // Bảo đảm mỗi request có cả positive và negative để binary trainer không nhận batch toàn một class.
-    private ensurePositiveAndNegative(actions: SyntheticAction[]): void {
-        if (actions.length < 2) return;
-        if (!actions.some((action) => action.positive)) {
-            actions[0] = {
-                positive: true,
-                eventType: 'PRODUCT_CLICKED',
-                eventTypes: ['PRODUCT_CLICKED', 'PRODUCT_VIEWED'],
-            };
-        }
-        if (!actions.some((action) => !action.positive)) {
-            actions[actions.length - 1] = {
-                positive: false,
-                eventType: 'PRODUCT_IMPRESSED',
-                eventTypes: [],
-            };
-        }
-    }
-
-    // Tạo candidate set có item hợp sở thích và item explore để model học trong cùng recommendation request.
+    // Lấy slate không lặp từ nhánh affinity và exploration, đồng thời loại anchor đang được xem.
+    // Tỷ lệ ưu tiên chỉ quyết định thành phần mục tiêu; nếu một nhóm thiếu item thì phần còn lại được bù từ nhóm kia.
+    // Nếu catalog chỉ còn ít item, slate được phép ngắn hơn mục tiêu thay vì lặp hoặc đưa anchor trở lại.
     private sampleCandidates(
         catalog: RecommendationCatalogProduct[],
         persona: RankingSyntheticPersona,
         count: number,
+        excludedProductId: string | null,
         random: RandomSource,
     ): RecommendationCatalogProduct[] {
-        const shuffled = [...catalog].sort(() => random() - 0.5);
+        const eligibleCatalog = catalog.filter(
+            (product) => product.productId !== excludedProductId,
+        );
+        if (eligibleCatalog.length < 2)
+            throw new Error('SYNTHETIC_CANDIDATE_POOL_TOO_SMALL');
+        const shuffled = [...eligibleCatalog];
+        // Fisher–Yates tạo hoán vị deterministic theo PRNG thay vì comparator ngẫu nhiên không có thứ tự ổn định.
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const otherIndex = Math.floor(random() * (index + 1));
+            [shuffled[index], shuffled[otherIndex]] = [
+                shuffled[otherIndex]!,
+                shuffled[index]!,
+            ];
+        }
         const matching = shuffled.filter((product) =>
             this.matchesPersona(product, persona),
         );
         const nonMatching = shuffled.filter(
             (product) => !this.matchesPersona(product, persona),
         );
-        const preferredCount = Math.max(2, Math.floor(count * 0.55));
-        return [
+        const targetCount = Math.min(count, eligibleCatalog.length);
+        const preferredCount = Math.min(
+            matching.length,
+            Math.floor(targetCount * 0.55),
+        );
+        const nonMatchingCount = Math.min(
+            nonMatching.length,
+            targetCount - preferredCount,
+        );
+        const selected = [
             ...matching.slice(0, preferredCount),
-            ...nonMatching.slice(0, count - preferredCount),
+            ...nonMatching.slice(0, nonMatchingCount),
+        ];
+        const remaining = [
             ...matching.slice(preferredCount),
-        ].slice(0, Math.min(count, catalog.length));
+            ...nonMatching.slice(nonMatchingCount),
+        ];
+        const slate = [...selected, ...remaining].slice(0, targetCount);
+        // Xáo slate sau khi áp quota để vị trí hiển thị không mã hóa nhánh affinity hay exploration.
+        for (let index = slate.length - 1; index > 0; index -= 1) {
+            const otherIndex = Math.floor(random() * (index + 1));
+            [slate[index], slate[otherIndex]] = [
+                slate[otherIndex]!,
+                slate[index]!,
+            ];
+        }
+        return slate;
     }
 
-    // Dựng preference tạm trong memory, tuyệt đối không ghi vào profile projection của hệ thống.
+    // Dựng profile giả dùng riêng cho request, không ghi vào profile projection của hệ thống.
+    // Mỗi tín hiệu được đặt trước thời điểm request một ngày để decay không đọc từ tương lai.
     private buildPreferences(
         persona: RankingSyntheticPersona,
         session: RankingSyntheticSession,
-        options: RankingSyntheticOptions,
     ): {
         product: PreferenceValue[];
         category: PreferenceValue[];
         brand: PreferenceValue[];
     } {
-        const lastSignalAt = new Date(options.referenceTime.getTime() - DAY_MS);
+        const lastSignalAt = new Date(
+            new Date(session.createdAt).getTime() - DAY_MS,
+        );
         return {
             product: session.currentProductId
                 ? [
@@ -593,11 +617,20 @@ export class RankingSimulationService {
         random: RandomSource,
     ): string[] {
         if (values.length === 0) return [];
+        const shuffled = [...values];
+        // Dùng cùng PRNG deterministic để thứ tự persona không phụ thuộc comparator ngẫu nhiên.
+        for (let index = shuffled.length - 1; index > 0; index -= 1) {
+            const otherIndex = Math.floor(random() * (index + 1));
+            [shuffled[index], shuffled[otherIndex]] = [
+                shuffled[otherIndex]!,
+                shuffled[index]!,
+            ];
+        }
         const count = Math.min(
             values.length,
             min + Math.floor(random() * (max - min + 1)),
         );
-        return [...values].sort(() => random() - 0.5).slice(0, count);
+        return shuffled.slice(0, count);
     }
 
     private pick<T>(values: readonly T[], random: RandomSource): T {
